@@ -192,7 +192,8 @@ pub struct MatchOpts {
     pub coarse_long_edge: usize,
     pub refine_long_edge: usize,
     pub refine_top: usize,
-    /// 已知尺度先验（查询降采样坐标系下）：只在其附近搜索，省一个数量级
+    /// 已知尺度先验，**降采样坐标系**下的值：只在其附近搜索，省一个数量级。
+    /// 调用方勿直接填全分辨率尺度——由 analyze_with 按当前降采样系数换算。
     pub prior_scale: Option<f64>,
 }
 

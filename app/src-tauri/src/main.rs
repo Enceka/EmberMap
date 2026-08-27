@@ -87,16 +87,19 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     ensure_lib(state)?;
     let g = state.lib.lock().unwrap();
     let lib = g.as_ref().unwrap();
-    // 始终全库扫描：有尺度先验时也只要 0.5-0.9s，换来的是误判能自我纠正。
-    let prior = state.tracker.lock().unwrap().prior_scale_ds;
+    // 始终全库扫描：尺度先验只收窄尺度搜索，不过滤候选，误判才能自我纠正。
+    let prior = state.tracker.lock().unwrap().prior_scale_full;
     let opts = match prior {
         Some(s) => em_core::Options::track(s),
         None => em_core::Options::acquire(),
     };
+    let t0 = std::time::Instant::now();
     let analysis = em_core::analyze_with(&rgb, w, h, lib, None, &opts);
+    let dt = t0.elapsed();
     match analysis {
         em_core::Analysis::NoPanel { reason } => {
-            state.tracker.lock().unwrap().reset();
+            let forgot = state.tracker.lock().unwrap().on_no_panel();
+            eprintln!("[em] {dt:?} 无面板{}：{reason}", if forgot { "(证据已清空)" } else { "(暂停)" });
             Ok(Payload::NoPanel { reason })
         }
         em_core::Analysis::Matched { panel, candidates, .. } => {
@@ -110,11 +113,26 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 None => &candidates[0],
             };
             if dec.variant.is_some() {
-                tk.prior_scale_ds = Some(best.scale_ds);
+                tk.prior_scale_full = Some(best.scale_full);
             }
             let (phase, evidence, advantage) = (dec.phase.to_string(), dec.evidence, dec.advantage);
             let confident = dec.variant.is_some();
             drop(tk);
+            // 自检：覆盖层本应对抓屏不可见（content_protected）。若它漏进画面，
+            // 手绘层会与参考掩码近乎完美匹配，分数异常拉高到 0.97+。
+            if best.score > 0.97 {
+                eprintln!("[em] 警告：分数 {:.3} 异常高，疑似覆盖层被抓屏捕获", best.score);
+            }
+            eprintln!(
+                "[em] {dt:?} {phase} 证据={evidence:.3} 分差={advantage:.3} 面板={panel:?} \
+                 先验={prior:?} | {}",
+                candidates
+                    .iter()
+                    .take(3)
+                    .map(|c| format!("{} {} {:.3}", c.name, c.floor, c.score))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            );
             let entry = lib
                 .entries
                 .iter()

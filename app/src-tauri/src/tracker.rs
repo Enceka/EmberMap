@@ -3,10 +3,14 @@
 
 use std::collections::HashMap;
 
-/// 累计优势达此值即锁定：单帧分差 0.07 立即锁，0.033 需两帧印证
-pub const LOCK_ADVANTAGE: f32 = 0.05;
+/// 累计优势达此值即锁定：单帧分差 0.07 立即锁，0.02 需两帧印证。
+/// 可以较果断，因为锁定后每帧仍全库扫描，误锁会在 2 帧内自我纠正。
+pub const LOCK_ADVANTAGE: f32 = 0.04;
 /// 投票帧数上限：证据再弱也在此帧数后采纳当前领先者，避免永不锁定
-const MAX_VOTE_FRAMES: u32 = 6;
+const MAX_VOTE_FRAMES: u32 = 4;
+/// 连续这么多帧检测不到面板才算换局/退出，清空投票；单帧丢失只当暂停，
+/// 否则实机里地图帧与丢失帧交替会让证据永远攒不起来
+const FORGET_NO_PANEL: u32 = 5;
 /// 挑战者需领先锁定变体这么多分、连续这么多帧，才允许切换
 const SWITCH_MARGIN: f32 = 0.025;
 const SWITCH_FRAMES: u32 = 2;
@@ -20,8 +24,10 @@ pub struct Tracker {
     vote_frames: u32,
     challenger: Option<(String, u32)>,
     lost: u32,
-    /// 降采样坐标系下的尺度先验（地图缩放在一局内固定）
-    pub prior_scale_ds: Option<f64>,
+    no_panel: u32,
+    /// 全分辨率尺度先验（地图缩放在一局内固定）。存全分辨率值才能跨帧复用，
+    /// 因为降采样系数随分析分辨率变化。
+    pub prior_scale_full: Option<f64>,
 }
 
 pub struct Decision {
@@ -88,13 +94,35 @@ mod tests {
     }
 
     #[test]
+    fn 单帧丢失面板不清空证据() {
+        let mut t = Tracker::default();
+        let f = frame(&[("A", 0.86), ("B", 0.84)]); // 弱证据，单帧不足以锁
+        assert!(t.update(&f, GATE).variant.is_none());
+        assert!(!t.on_no_panel(), "单帧丢失不该清空");
+        // 证据仍在，下一帧地图回来即可锁定
+        assert_eq!(t.update(&f, GATE).variant.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn 持续丢失面板才清空证据() {
+        let mut t = Tracker::default();
+        let f = frame(&[("A", 0.86), ("B", 0.84)]);
+        t.update(&f, GATE);
+        for _ in 0..FORGET_NO_PANEL - 1 {
+            assert!(!t.on_no_panel());
+        }
+        assert!(t.on_no_panel(), "连续丢失应清空");
+        assert!(t.update(&f, GATE).variant.is_none(), "清空后需重新攒证据");
+    }
+
+    #[test]
     fn 连续掉出门槛后解锁() {
         let mut t = Tracker::default();
         t.update(&frame(&[("A", 0.84), ("B", 0.77)]), GATE);
         let f = frame(&[("A", 0.5), ("B", 0.4)]);
         assert_eq!(t.update(&f, GATE).variant.as_deref(), Some("A"), "缓冲期维持显示");
         assert!(t.update(&f, GATE).variant.is_none(), "连续掉分应解锁");
-        assert!(t.prior_scale_ds.is_none(), "解锁须清尺度先验");
+        assert!(t.prior_scale_full.is_none(), "解锁须清尺度先验");
     }
 }
 
@@ -103,9 +131,22 @@ impl Tracker {
         *self = Tracker::default();
     }
 
+    /// 本帧没检测到地图面板：只当暂停，连续 FORGET_NO_PANEL 帧才清空证据。
+    /// 返回 true 表示已清空（调用方可据此提示"等待地图"）。
+    pub fn on_no_panel(&mut self) -> bool {
+        self.no_panel += 1;
+        if self.no_panel >= FORGET_NO_PANEL {
+            self.reset();
+            true
+        } else {
+            false
+        }
+    }
+
     /// 输入本帧全库候选（已按分降序），返回该显示哪个变体。
     /// candidates 必须来自全库扫描，否则粘滞逻辑失去纠错能力。
     pub fn update(&mut self, candidates: &[(String, f32)], gate: f32) -> Decision {
+        self.no_panel = 0;
         // 每变体取最佳楼层分
         let mut best: HashMap<&str, f32> = HashMap::new();
         for (v, s) in candidates {

@@ -10,28 +10,23 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let lib = em_core::load_library(std::path::Path::new(&args[0])).expect("bundle");
 
-    let configs: Vec<(&str, Options)> = vec![
-        ("半分辨率/旧配置 c160 r320 top5", Options {
-            target_long_edge: 1500.0,
-            match_opts: MatchOpts { coarse_long_edge: 160, refine_long_edge: 320, refine_top: 5, prior_scale: None },
-        }),
-        ("半分辨率 c200 r520 top10", Options {
-            target_long_edge: 1500.0,
-            match_opts: MatchOpts { coarse_long_edge: 200, refine_long_edge: 520, refine_top: 10, prior_scale: None },
-        }),
-        ("近全分辨率 c200 r520 top10", Options {
-            target_long_edge: 2400.0,
-            match_opts: MatchOpts { coarse_long_edge: 200, refine_long_edge: 520, refine_top: 10, prior_scale: None },
-        }),
-        ("跟踪:全库+尺度先验 c200 r520 top10", Options {
-            target_long_edge: 1600.0,
-            match_opts: MatchOpts { coarse_long_edge: 200, refine_long_edge: 520, refine_top: 10, prior_scale: Some(1.0) },
-        }),
-        ("跟踪:全库+先验 top5", Options {
-            target_long_edge: 1600.0,
-            match_opts: MatchOpts { coarse_long_edge: 200, refine_long_edge: 520, refine_top: 5, prior_scale: Some(1.0) },
-        }),
+    // 命令行给 --prior <全分辨率尺度> 时额外测跟踪配置
+    let prior: Option<f64> = std::env::var("EM_PRIOR").ok().and_then(|s| s.parse().ok());
+    let mk = |label: &'static str, tle: f64, c: usize, r: usize, top: usize, p: Option<f64>| {
+        (label, Options {
+            target_long_edge: tle,
+            match_opts: MatchOpts { coarse_long_edge: c, refine_long_edge: r, refine_top: top, prior_scale: None },
+            prior_scale_full: p,
+        })
+    };
+    let mut configs: Vec<(&str, Options)> = vec![
+        mk("旧配置 tle1500 c160 r320 top5", 1500.0, 160, 320, 5, None),
+        mk("acquire tle2400 c200 r520 top10", 2400.0, 200, 520, 10, None),
     ];
+    if let Some(p) = prior {
+        configs.push(mk("track tle2400 top5 +先验", 2400.0, 200, 520, 5, Some(p)));
+        configs.push(mk("track tle1600 top5 +先验", 1600.0, 200, 520, 5, Some(p)));
+    }
 
     for spec in &args[1..] {
         let parts: Vec<&str> = spec.split(':').collect();

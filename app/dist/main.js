@@ -216,3 +216,11 @@ $("rng-alpha").addEventListener("input", () => {
   pushOverlay(false); // alpha 变化会改变指纹，自动重推
 });
 listen("overlay-ready", () => pushOverlay(true));
+
+// 启动即按勾选状态开工（默认自动监测 + 覆盖模式）
+overlayMode = $("chk-overlay").checked;
+if ($("chk-watch").checked) {
+  watching = true;
+  setStatus("自动监测中——打开游戏内地图即自动识别");
+  watchLoop();
+}
