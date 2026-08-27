@@ -1,6 +1,9 @@
 //! 参数扫描：对已知真值的截图，比较不同分辨率/候选数配置下
 //! 「正确变体」与「最佳其他变体」的分差（越大越不容易误判）。
 //! 用法：cargo run --release --example sweep -- <bundle> <图:期望变体名:期望楼层> ...
+//!
+//! 截图需自备（本仓库不分发游戏截图）。CI 的自动回归改用
+//! tests/synth_regression.rs，不依赖外部图片。
 
 use std::time::Instant;
 

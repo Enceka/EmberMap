@@ -21,21 +21,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: em-core
-      - name: 单元测试
+      # 含 tests/synth_regression.rs：从参考库自身合成部分探索查询，
+      # 匹配须找回原条目且尺度可复原。不依赖任何外部截图。
+      - name: 单元测试与合成回归
         run: cargo test --release --manifest-path em-core/Cargo.toml
       - name: clippy
         run: cargo clippy --manifest-path em-core/Cargo.toml --all-targets -- -D warnings
-      - name: 真值回归（已知截图必须识别正确）
-        run: |
-          cargo build --release --manifest-path em-core/Cargo.toml --example sweep
-          ./em-core/target/release/examples/sweep app/bundle \
-            "test/shot-20260826-2219.png:右中门1-2:1f" \
-            "test/shot-20260827-2114.png:左中门1-1:1f" | tee /tmp/sweep.log
-          # sweep 对识别正确的配置打 ✓，出现 ✗ 即回归
-          if grep -q '✗' /tmp/sweep.log; then
-            echo "::error::识别回归：有配置未能正确识别已知截图"
-            exit 1
-          fi
 
   app:
     name: 应用构建与状态机测试
