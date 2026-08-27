@@ -1,4 +1,5 @@
 // EmberMap 前端：调用后端匹配，canvas 合成叠加（截图 + 手绘 screen 混合 + 门位）。
+// 自动监测为自适应连续循环：分析完歇 IDLE_FAST 即下一轮；连续未检出则放缓省 CPU。
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
@@ -8,41 +9,22 @@ const statusEl = $("status");
 const canvas = $("view");
 const ctx = canvas.getContext("2d");
 
-let lastPayload = null;      // 最近一次成功匹配（用于透明度滑杆重绘）
-let pending = { key: null, n: 0 };  // 自动模式持久性过滤：连续 2 帧同结果才切换
+const IDLE_FAST = 350;    // 地图在屏时的轮询间歇 ms
+const IDLE_SLOW = 1500;   // 连续未检出后的放缓间歇 ms
+const SURE = 0.85;        // 高置信：新结果免二次确认直接显示
+
+let lastPayload = null;
+let pending = { key: null, n: 0 };  // 低分新结果的 2 帧确认
 let shownKey = null;
-let watchTimer = null;
+let watching = false;
 let busy = false;
 let overlayMode = false;
-let missCount = 0;           // 连续未检出计数，≥2 隐藏覆盖窗
+let overlayVisible = false;
+let lowConfMiss = 0;       // 面板在但低置信的连续帧数
+let lastPushed = null;     // 上次推给覆盖层的指纹，避免重复推送
 
-function overlayArgs(p) {
-  return {
-    payload: {
-      draw_png: p.draw_png,
-      tf: p.tf,
-      doors: p.doors,
-      panel_w: p.panel[2],
-      panel_h: p.panel[3],
-      alpha: $("rng-alpha").value / 100,
-    },
-    x: p.panel[0],
-    y: p.panel[1],
-    w: p.panel[2],
-    h: p.panel[3],
-  };
-}
-
-async function pushOverlay() {
-  if (overlayMode && lastPayload) {
-    try { await invoke("overlay_update", overlayArgs(lastPayload)); } catch (e) { setStatus(String(e), "warn"); }
-  }
-}
-
-async function missOverlay() {
-  missCount += 1;
-  if (overlayMode && missCount >= 2) await invoke("overlay_hide");
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const floorCn = (f) => ({ "1f": "一楼", "2f": "二楼", b1: "地下室" }[f] || f);
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
@@ -65,14 +47,12 @@ async function render(p) {
   canvas.height = shot.height;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(shot, 0, 0);
-  // 手绘图黑底：screen 混合 ≈ 黑色透明，结构/文字/路线浮现
   ctx.save();
   ctx.setTransform(p.tf.scale, 0, 0, p.tf.scale, p.tf.tx, p.tf.ty);
   ctx.globalCompositeOperation = "screen";
   ctx.globalAlpha = alpha;
   ctx.drawImage(draw, 0, 0);
   ctx.restore();
-  // 门位
   const r = Math.max(8, canvas.height * 0.014);
   ctx.font = `bold ${Math.max(15, canvas.height * 0.026)}px "PingFang SC", sans-serif`;
   for (const d of p.doors) {
@@ -95,45 +75,104 @@ function renderCandidates(list) {
     .join("");
 }
 
-const floorCn = (f) => ({ "1f": "一楼", "2f": "二楼", b1: "地下室" }[f] || f);
+function overlayArgs(p) {
+  return {
+    payload: {
+      draw_png: p.draw_png,
+      tf: p.tf,
+      doors: p.doors,
+      panel_w: p.panel[2],
+      panel_h: p.panel[3],
+      alpha: $("rng-alpha").value / 100,
+    },
+    x: p.panel[0],
+    y: p.panel[1],
+    w: p.panel[2],
+    h: p.panel[3],
+  };
+}
 
+// 指纹：结果/几何没变就不重推覆盖层
+function fingerprint(p) {
+  const t = p.tf;
+  return [p.name, p.floor, ...p.panel, t.scale.toFixed(3),
+          t.tx.toFixed(0), t.ty.toFixed(0), $("rng-alpha").value].join("|");
+}
+
+async function pushOverlay(force) {
+  if (!overlayMode || !lastPayload) return;
+  const fp = fingerprint(lastPayload);
+  if (!force && overlayVisible && fp === lastPushed) return;
+  try {
+    await invoke("overlay_update", overlayArgs(lastPayload));
+    overlayVisible = true;
+    lastPushed = fp;
+  } catch (e) {
+    setStatus(String(e), "warn");
+  }
+}
+
+async function hideOverlay() {
+  if (overlayVisible) {
+    await invoke("overlay_hide");
+    overlayVisible = false;
+    lastPushed = null;
+  }
+}
+
+/// 返回 'hit' | 'miss'（供自适应循环决定节奏）
 async function analyzeOnce(auto) {
-  if (busy) return;
+  if (busy) return "miss";
   busy = true;
   $("btn-capture").disabled = true;
   if (!auto) setStatus("抓屏匹配中…");
   try {
     const p = await invoke("analyze_screen");
     if (p.status === "no_panel") {
-      if (!auto) setStatus(p.reason, "warn");
+      // 面板整体消失 = 地图关了，立即隐藏
       pending = { key: null, n: 0 };
-      await missOverlay();
-      return;
+      lowConfMiss = 0;
+      await hideOverlay();
+      if (!auto) setStatus(p.reason, "warn");
+      return "miss";
     }
     const key = `${p.name}|${p.floor}`;
     if (!p.confident) {
-      if (!auto) setStatus(`低置信（${p.score.toFixed(2)}），结果仅供参考：${p.name}·${floorCn(p.floor)}`, "warn");
-      await missOverlay();
-      return;
+      // 面板还在但低置信：可疑帧，2 帧缓冲再隐藏
+      lowConfMiss += 1;
+      if (lowConfMiss >= 2) await hideOverlay();
+      if (!auto) setStatus(`低置信（${p.score.toFixed(2)}），仅供参考：${p.name}·${floorCn(p.floor)}`, "warn");
+      return "miss";
     }
-    // 自动模式：连续 2 帧同结果才切换显示，滤掉单帧漏网误检
-    if (auto && key !== shownKey) {
+    lowConfMiss = 0;
+    // 低分新结果需连续 2 帧；高置信或结果未变则直接采用
+    if (auto && key !== shownKey && p.score < SURE) {
       if (pending.key === key) pending.n += 1;
       else pending = { key, n: 1 };
-      if (pending.n < 2) return;
+      if (pending.n < 2) return "hit";
     }
     shownKey = key;
     lastPayload = p;
-    missCount = 0;
     setStatus(`${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}`, "ok");
     renderCandidates(p.candidates);
     await render(p);
-    await pushOverlay();
+    await pushOverlay(false);
+    return "hit";
   } catch (e) {
     setStatus(String(e), "warn");
+    return "miss";
   } finally {
     busy = false;
     $("btn-capture").disabled = false;
+  }
+}
+
+async function watchLoop() {
+  let misses = 0;
+  while (watching) {
+    const r = await analyzeOnce(true);
+    misses = r === "hit" ? 0 : misses + 1;
+    await sleep(misses >= 3 ? IDLE_SLOW : IDLE_FAST);
   }
 }
 
@@ -145,11 +184,11 @@ $("btn-reset").addEventListener("click", async () => {
   setStatus("已清除锁定，下次匹配全库重扫");
 });
 $("chk-watch").addEventListener("change", (ev) => {
-  if (ev.target.checked) {
+  watching = ev.target.checked;
+  if (watching) {
     setStatus("自动监测中——打开游戏内地图即自动识别");
-    watchTimer = setInterval(() => analyzeOnce(true), 3000);
+    watchLoop();
   } else {
-    clearInterval(watchTimer);
     setStatus("已停止自动监测");
   }
 });
@@ -157,15 +196,14 @@ $("chk-overlay").addEventListener("change", async (ev) => {
   overlayMode = ev.target.checked;
   if (overlayMode) {
     setStatus("覆盖模式开——识别到地图后自动贴上去（点击穿透，不挡操作）");
-    await pushOverlay();
+    await pushOverlay(true);
   } else {
-    await invoke("overlay_hide");
+    await hideOverlay();
   }
 });
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
 $("rng-alpha").addEventListener("input", () => {
   if (lastPayload) render(lastPayload);
-  pushOverlay();
+  pushOverlay(false); // alpha 变化会改变指纹，自动重推
 });
-// 覆盖窗首次加载完成后补发一帧
-listen("overlay-ready", () => pushOverlay());
+listen("overlay-ready", () => pushOverlay(true));
