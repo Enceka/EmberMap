@@ -81,21 +81,21 @@ function overlayArgs(p) {
       draw_png: p.draw_png,
       tf: p.tf,
       doors: p.doors,
-      panel_w: p.panel[2],
-      panel_h: p.panel[3],
+      panel_w: p.view[2],
+      panel_h: p.view[3],
       alpha: $("rng-alpha").value / 100,
     },
-    x: p.panel[0],
-    y: p.panel[1],
-    w: p.panel[2],
-    h: p.panel[3],
+    x: p.view[0],
+    y: p.view[1],
+    w: p.view[2],
+    h: p.view[3],
   };
 }
 
 // 指纹：结果/几何没变就不重推覆盖层
 function fingerprint(p) {
   const t = p.tf;
-  return [p.name, p.floor, ...p.panel, t.scale.toFixed(3),
+  return [p.name, p.floor, ...p.view, t.scale.toFixed(3),
           t.tx.toFixed(0), t.ty.toFixed(0), $("rng-alpha").value].join("|");
 }
 

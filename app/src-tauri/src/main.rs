@@ -53,10 +53,12 @@ enum Payload {
         shot_png: String,
         /// 匹配变体该层的手绘图 PNG（base64）
         draw_png: String,
-        /// 手绘图 → 面板坐标的相似变换
+        /// 手绘图 → 显示区域坐标的相似变换
         tf: em_core::Transform,
         doors: Vec<DoorOut>,
-        panel: [usize; 4],
+        /// 整层显示区域（屏幕物理坐标，x/y 可为负——游戏窗口可能部分在屏幕外），
+        /// 覆盖窗按它定位定尺寸
+        view: [i32; 4],
     },
 }
 
@@ -138,34 +140,55 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 .iter()
                 .find(|e| e.variant == best.variant && e.floor == best.floor)
                 .unwrap();
-            // 面板裁剪图
-            let [x, y, pw, ph] = panel;
+            // 显示区域 = 整层参考图投影回画面，而非仅已探索区域——
+            // 工具的价值就在于显示还没探索的部分。裁到画面边界内。
+            let [px0, py0, pw0, ph0] = panel;
+            let b0 = best.transform; // q(面板局部 px) → 参考 px：ref = q·s + t
+            let proj = |rx: f64, ry: f64| {
+                ((rx - b0.tx) / b0.scale + px0 as f64, (ry - b0.ty) / b0.scale + py0 as f64)
+            };
+            let (vx0, vy0) = proj(0.0, 0.0);
+            let (vx1, vy1) = proj(entry.mask.w as f64, entry.mask.h as f64);
+            let x = vx0.floor().max(0.0) as usize;
+            let y = vy0.floor().max(0.0) as usize;
+            let pw = (vx1.ceil().min(w as f64) as usize).saturating_sub(x).max(1);
+            let ph = (vy1.ceil().min(h as f64) as usize).saturating_sub(y).max(1);
             let mut crop = vec![0u8; pw * ph * 3];
             for row in 0..ph {
                 let src = ((y + row) * w + x) * 3;
                 crop[row * pw * 3..(row + 1) * pw * 3]
                     .copy_from_slice(&rgb[src..src + pw * 3]);
             }
+            // 面板局部坐标 → 显示区域局部坐标的平移量
+            let (sx, sy) = (px0 as f64 - x as f64, py0 as f64 - y as f64);
+            let _ = (pw0, ph0);
             // draw→面板 变换：q = d·(a/b) + (ta−tb)/b
             let a = entry.tf_draw_to_game;
             let b = best.transform;
             let tf = em_core::Transform {
                 scale: a.scale / b.scale,
-                tx: (a.tx - b.tx) / b.scale,
-                ty: (a.ty - b.ty) / b.scale,
+                tx: (a.tx - b.tx) / b.scale + sx,
+                ty: (a.ty - b.ty) / b.scale + sy,
             };
             let doors = entry
                 .doors
                 .iter()
                 .map(|d| DoorOut {
                     label: d.label.clone(),
-                    x: (d.x - b.tx) / b.scale,
-                    y: (d.y - b.ty) / b.scale,
+                    x: (d.x - b.tx) / b.scale + sx,
+                    y: (d.y - b.ty) / b.scale + sy,
                 })
                 .collect();
             let draw_png = B64.encode(
                 std::fs::read(&entry.draw_path).map_err(|e| e.to_string())?,
             );
+            // EM_DUMP=1：把匹配器看到的面板裁剪图落盘，便于排查误判
+            if std::env::var("EM_DUMP").is_ok() {
+                let _ = image::save_buffer(
+                    "/tmp/em_panel.png", &crop, pw as u32, ph as u32,
+                    image::ExtendedColorType::Rgb8,
+                );
+            }
             Ok(Payload::Ok {
                 confident,
                 phase,
@@ -184,34 +207,88 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 draw_png,
                 tf,
                 doors,
-                panel,
+                // 交给前端定位覆盖窗的是「整层显示区域」，不是已探索面板
+                view: [x as i32, y as i32, pw as i32, ph as i32],
             })
         }
     }
+}
+
+/// 游戏窗口标识（Wine 下进程名为 dwrg.exe）
+const GAME_HINTS: [&str; 4] = ["第五人格", "identityv", "dwrg", "wine"];
+
+fn rgba_to_rgb(rgba: Vec<u8>, n: usize) -> Vec<u8> {
+    let mut rgb = vec![0u8; n * 3];
+    for i in 0..n {
+        rgb[i * 3] = rgba[i * 4];
+        rgb[i * 3 + 1] = rgba[i * 4 + 1];
+        rgb[i * 3 + 2] = rgba[i * 4 + 2];
+    }
+    rgb
+}
+
+/// 优先抓游戏窗口本身：与前台无关（我们的窗口挡住也没事），
+/// 且覆盖层不可能被自己抓进去。找不到游戏窗口时退回抓主屏。
+/// 返回 (rgb, w, h, 该图左上角在屏幕上的物理坐标)。
+fn capture_target() -> Result<(Vec<u8>, usize, usize, i32, i32), String> {
+    if let Ok(windows) = xcap::Window::all() {
+        let game = windows.into_iter().find(|w| {
+            let name = format!(
+                "{} {}",
+                w.app_name().unwrap_or_default(),
+                w.title().unwrap_or_default()
+            )
+            .to_lowercase();
+            let big = w.width().unwrap_or(0) > 400 && w.height().unwrap_or(0) > 300;
+            let visible = !w.is_minimized().unwrap_or(false);
+            big && visible && GAME_HINTS.iter().any(|h| name.contains(h))
+        });
+        if let Some(win) = game {
+            if let Ok(img) = win.capture_image() {
+                eprintln!(
+                    "[em] 抓取游戏窗口「{} / {}」窗口逻辑={}x{}@{},{} 抓到物理={}x{}",
+                    win.app_name().unwrap_or_default(),
+                    win.title().unwrap_or_default(),
+                    win.width().unwrap_or(0), win.height().unwrap_or(0),
+                    win.x().unwrap_or(0), win.y().unwrap_or(0),
+                    img.width(), img.height()
+                );
+                let (w, h) = (img.width() as usize, img.height() as usize);
+                // 窗口坐标是逻辑像素，抓到的图是物理像素；按比例换算原点
+                let sx = w as f64 / win.width().unwrap_or(w as u32).max(1) as f64;
+                let sy = h as f64 / win.height().unwrap_or(h as u32).max(1) as f64;
+                let ox = (win.x().unwrap_or(0) as f64 * sx).round() as i32;
+                let oy = (win.y().unwrap_or(0) as f64 * sy).round() as i32;
+                return Ok((rgba_to_rgb(img.into_raw(), w * h), w, h, ox, oy));
+            }
+        }
+    }
+    let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
+    let mon = monitors
+        .iter()
+        .find(|m| m.is_primary().unwrap_or(false))
+        .or_else(|| monitors.first())
+        .ok_or("没有可用显示器")?;
+    let img = mon.capture_image().map_err(|e| {
+        format!("抓屏失败：{e}。请在 系统设置→隐私与安全性→屏幕录制 给本应用授权")
+    })?;
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    Ok((rgba_to_rgb(img.into_raw(), w * h), w, h, 0, 0))
 }
 
 // 注意：重活必须放 spawn_blocking——同步命令跑在主线程上会把 UI 冻住
 #[tauri::command]
 async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-        let mon = monitors
-            .iter()
-            .find(|m| m.is_primary().unwrap_or(false))
-            .or_else(|| monitors.first())
-            .ok_or("没有可用显示器")?;
-        let img = mon.capture_image().map_err(|e| {
-            format!("抓屏失败：{e}。请在 系统设置→隐私与安全性→屏幕录制 给本应用授权")
-        })?;
-        let (w, h) = (img.width() as usize, img.height() as usize);
-        let rgba = img.into_raw();
-        let mut rgb = vec![0u8; w * h * 3];
-        for i in 0..w * h {
-            rgb[i * 3] = rgba[i * 4];
-            rgb[i * 3 + 1] = rgba[i * 4 + 1];
-            rgb[i * 3 + 2] = rgba[i * 4 + 2];
+        let (rgb, w, h, ox, oy) = capture_target()?;
+        let mut payload = run_analysis(rgb, w, h, &app.state::<AppState>())?;
+        // 换算到屏幕物理坐标供覆盖窗定位；不可钳到 0，游戏窗口可能在屏幕外
+        if let Payload::Ok { view, .. } = &mut payload {
+            view[0] += ox;
+            view[1] += oy;
+            eprintln!("[em] 整层显示区域(屏幕物理)={view:?} 窗口原点=({ox},{oy})");
         }
-        run_analysis(rgb, w, h, &app.state::<AppState>())
+        Ok(payload)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -224,6 +301,7 @@ async fn analyze_file(path: String, app: tauri::AppHandle) -> Result<Payload, St
         let (w, h) = (im.width() as usize, im.height() as usize);
         run_analysis(im.into_raw(), w, h, &app.state::<AppState>())
     })
+
     .await
     .map_err(|e| e.to_string())?
 }

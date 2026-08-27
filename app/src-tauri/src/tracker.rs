@@ -6,8 +6,10 @@ use std::collections::HashMap;
 /// 累计优势达此值即锁定：单帧分差 0.07 立即锁，0.02 需两帧印证。
 /// 可以较果断，因为锁定后每帧仍全库扫描，误锁会在 2 帧内自我纠正。
 pub const LOCK_ADVANTAGE: f32 = 0.04;
-/// 投票帧数上限：证据再弱也在此帧数后采纳当前领先者，避免永不锁定
-const MAX_VOTE_FRAMES: u32 = 4;
+/// 单帧分差低于此值视为「无判别力」，不投票也不锁定。
+/// HUD 小地图（约 255×269）上 13 个变体常挤在 0.845-0.857，分差 0.00-0.006，
+/// 此时任何锁定都是掷硬币；宁可一直显示识别中，等用户打开大地图或探索更多。
+const MIN_FRAME_ADVANTAGE: f32 = 0.012;
 /// 连续这么多帧检测不到面板才算换局/退出，清空投票；单帧丢失只当暂停，
 /// 否则实机里地图帧与丢失帧交替会让证据永远攒不起来
 const FORGET_NO_PANEL: u32 = 5;
@@ -63,6 +65,28 @@ mod tests {
         let f = frame(&[("A", 0.86), ("B", 0.83)]);
         assert!(t.update(&f, GATE).variant.is_none(), "首帧证据不足不该锁");
         assert_eq!(t.update(&f, GATE).variant.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn 无判别力的帧永不锁定() {
+        // HUD 小地图实况：分数都高但彼此只差 0.005，锁定即掷硬币
+        let mut t = Tracker::default();
+        let f = frame(&[("A", 0.855), ("B", 0.851), ("C", 0.846)]);
+        for _ in 0..20 {
+            assert!(t.update(&f, GATE).variant.is_none(), "分差过小不该锁定");
+        }
+    }
+
+    #[test]
+    fn 无判别力帧不污染证据() {
+        let mut t = Tracker::default();
+        let noise = frame(&[("B", 0.855), ("A", 0.851)]);
+        for _ in 0..20 {
+            t.update(&noise, GATE);
+        }
+        // 噪声不该把 B 推过门槛；此后一帧强证据应锁到 A
+        let strong = frame(&[("A", 0.88), ("B", 0.80)]);
+        assert_eq!(t.update(&strong, GATE).variant.as_deref(), Some("A"));
     }
 
     #[test]
@@ -161,7 +185,8 @@ impl Tracker {
 
         match self.locked.clone() {
             None => {
-                if leader_score >= gate {
+                let informative = advantage >= MIN_FRAME_ADVANTAGE;
+                if leader_score >= gate && informative {
                     *self.votes.entry(leader.clone()).or_insert(0.0) += advantage;
                     self.vote_frames += 1;
                 }
@@ -171,10 +196,11 @@ impl Tracker {
                     .iter()
                     .max_by(|a, b| a.1.total_cmp(b.1))
                     .map(|(k, v)| (k.clone(), *v));
+                // 必须本帧有判别力 + 累计证据够 + 领先者与累计冠军一致，三者齐备才锁
                 let lock_now = leader_score >= gate
-                    && ((ev >= LOCK_ADVANTAGE
-                        && top_vote.as_ref().map_or(false, |(k, _)| *k == leader))
-                        || self.vote_frames >= MAX_VOTE_FRAMES);
+                    && informative
+                    && ev >= LOCK_ADVANTAGE
+                    && top_vote.as_ref().map_or(false, |(k, _)| *k == leader);
                 if lock_now {
                     let v = top_vote.map(|(k, _)| k).unwrap_or(leader);
                     self.locked = Some(v.clone());
