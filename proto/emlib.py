@@ -192,6 +192,31 @@ def crop(arr, bbox):
     return arr[y:y + h, x:x + w]
 
 
+def find_map_region(mask, close=75, margin=30, min_area=8000):
+    """从整帧结构掩码里自动定位地图面板区域，返回 bbox 或 None。
+
+    地图结构是画面里最大的一团彼此邻近的掩码块；UI 图标/文字虽然
+    色相相同，但零散且远离地图。大核闭运算把邻近块并成整团后取
+    掩码像素最多的一团，bbox 外扩 margin。
+    """
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close, close))
+    merged = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ker)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(merged, 8)
+    best, best_area = None, 0
+    for i in range(1, n):
+        x, y, w, h = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP], \
+            stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        area = int(np.count_nonzero(mask[y:y + h, x:x + w][labels[y:y + h, x:x + w] == i]))
+        if area > best_area:
+            best, best_area = (x, y, w, h), area
+    if best is None or best_area < min_area:
+        return None
+    x, y, w, h = best
+    H, W = mask.shape
+    x0, y0 = max(0, x - margin), max(0, y - margin)
+    return [x0, y0, min(W, x + w + margin) - x0, min(H, y + h + margin) - y0]
+
+
 # ---------------------------------------------------------------------------
 # 参考库
 # ---------------------------------------------------------------------------
