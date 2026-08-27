@@ -11,6 +11,8 @@ use tauri::State;
 
 struct AppState {
     lib: Mutex<Option<em_core::Library>>,
+    /// 已置信锁定的变体 id：后续帧只匹配该变体 3 层（13× 提速），掉分即全库重扫
+    locked: Mutex<Option<String>>,
 }
 
 #[derive(Serialize)]
@@ -77,7 +79,18 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     ensure_lib(state)?;
     let g = state.lib.lock().unwrap();
     let lib = g.as_ref().unwrap();
-    match em_core::analyze(&rgb, w, h, lib) {
+    let only = state.locked.lock().unwrap().clone();
+    let mut analysis = em_core::analyze_opts(&rgb, w, h, lib, only.as_deref());
+    if only.is_some() {
+        // 锁定变体不再过门槛：可能换图/锁错，全库重扫
+        if matches!(&analysis, em_core::Analysis::Matched { confident: false, .. }) {
+            analysis = em_core::analyze_opts(&rgb, w, h, lib, None);
+        }
+    }
+    if let em_core::Analysis::Matched { confident: true, candidates, .. } = &analysis {
+        *state.locked.lock().unwrap() = Some(candidates[0].variant.clone());
+    }
+    match analysis {
         em_core::Analysis::NoPanel { reason } => Ok(Payload::NoPanel { reason }),
         em_core::Analysis::Matched { panel, confident, candidates } => {
             let best = &candidates[0];
@@ -134,33 +147,48 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     }
 }
 
+// 注意：重活必须放 spawn_blocking——同步命令跑在主线程上会把 UI 冻住
 #[tauri::command]
-fn analyze_screen(state: State<AppState>) -> Result<Payload, String> {
-    let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-    let mon = monitors
-        .iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .or_else(|| monitors.first())
-        .ok_or("没有可用显示器")?;
-    let img = mon.capture_image().map_err(|e| {
-        format!("抓屏失败：{e}。请在 系统设置→隐私与安全性→屏幕录制 给本应用授权")
-    })?;
-    let (w, h) = (img.width() as usize, img.height() as usize);
-    let rgba = img.into_raw();
-    let mut rgb = vec![0u8; w * h * 3];
-    for i in 0..w * h {
-        rgb[i * 3] = rgba[i * 4];
-        rgb[i * 3 + 1] = rgba[i * 4 + 1];
-        rgb[i * 3 + 2] = rgba[i * 4 + 2];
-    }
-    run_analysis(rgb, w, h, &state)
+async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
+        let mon = monitors
+            .iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+            .or_else(|| monitors.first())
+            .ok_or("没有可用显示器")?;
+        let img = mon.capture_image().map_err(|e| {
+            format!("抓屏失败：{e}。请在 系统设置→隐私与安全性→屏幕录制 给本应用授权")
+        })?;
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let rgba = img.into_raw();
+        let mut rgb = vec![0u8; w * h * 3];
+        for i in 0..w * h {
+            rgb[i * 3] = rgba[i * 4];
+            rgb[i * 3 + 1] = rgba[i * 4 + 1];
+            rgb[i * 3 + 2] = rgba[i * 4 + 2];
+        }
+        run_analysis(rgb, w, h, &app.state::<AppState>())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn analyze_file(path: String, state: State<AppState>) -> Result<Payload, String> {
-    let im = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
-    let (w, h) = (im.width() as usize, im.height() as usize);
-    run_analysis(im.into_raw(), w, h, &state)
+async fn analyze_file(path: String, app: tauri::AppHandle) -> Result<Payload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let im = image::open(&path).map_err(|e| e.to_string())?.to_rgb8();
+        let (w, h) = (im.width() as usize, im.height() as usize);
+        run_analysis(im.into_raw(), w, h, &app.state::<AppState>())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 清除变体锁定，下一帧全库重扫（换局/怀疑锁错时用）
+#[tauri::command]
+fn reset_lock(state: State<AppState>) {
+    *state.locked.lock().unwrap() = None;
 }
 
 /// 覆盖窗口：透明/无边框/置顶/点击穿透/防捕获，按面板物理像素坐标摆放。
@@ -214,10 +242,11 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState { lib: Mutex::new(None) })
+        .manage(AppState { lib: Mutex::new(None), locked: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![
             analyze_screen,
             analyze_file,
+            reset_lock,
             overlay_update,
             overlay_hide
         ])

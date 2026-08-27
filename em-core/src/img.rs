@@ -33,6 +33,33 @@ impl Gray {
     }
 }
 
+/// RGB8 整数倍盒式降采样（均值），用于把高分屏截图降到参考库像素密度附近。
+pub fn downscale_rgb(rgb: &[u8], w: usize, h: usize, f: usize) -> (Vec<u8>, usize, usize) {
+    if f <= 1 {
+        return (rgb.to_vec(), w, h);
+    }
+    let (tw, th) = (w / f, h / f);
+    let mut out = vec![0u8; tw * th * 3];
+    out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
+        for tx in 0..tw {
+            let mut acc = [0u32; 3];
+            for dy in 0..f {
+                let base = ((ty * f + dy) * w + tx * f) * 3;
+                for dx in 0..f {
+                    for c in 0..3 {
+                        acc[c] += rgb[base + dx * 3 + c] as u32;
+                    }
+                }
+            }
+            let n = (f * f) as u32;
+            for c in 0..3 {
+                row[tx * 3 + c] = (acc[c] / n) as u8;
+            }
+        }
+    });
+    (out, tw, th)
+}
+
 /// RGB8 交错格式的 5×5 逐通道中值滤波（边界复制），对齐 cv2.medianBlur(img, 5)。
 pub fn median5_rgb(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 3];

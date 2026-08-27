@@ -138,6 +138,12 @@ async function analyzeOnce(auto) {
 }
 
 $("btn-capture").addEventListener("click", () => analyzeOnce(false));
+$("btn-reset").addEventListener("click", async () => {
+  await invoke("reset_lock");
+  shownKey = null;
+  pending = { key: null, n: 0 };
+  setStatus("已清除锁定，下次匹配全库重扫");
+});
 $("chk-watch").addEventListener("change", (ev) => {
   if (ev.target.checked) {
     setStatus("自动监测中——打开游戏内地图即自动识别");
