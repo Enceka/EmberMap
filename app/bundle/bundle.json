@@ -1,0 +1,668 @@
+{
+ "version": 1,
+ "variants": [
+  {
+   "id": "gm-2dfb1dac",
+   "name": "右中门1-2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-2dfb1dac_1f.png",
+     "draw": "draw/gm-2dfb1dac_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.91474,
+      "tx": 0.0,
+      "ty": -8.725
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 289.1,
+       "y": 557.5
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-2dfb1dac_2f.png",
+     "draw": "draw/gm-2dfb1dac_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.87177,
+      "tx": 2.0125,
+      "ty": 0.0
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 522.5,
+       "y": 232.8
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-2dfb1dac_b1.png",
+     "draw": "draw/gm-2dfb1dac_b1.png",
+     "tf_draw_to_game": {
+      "scale": 1.07327,
+      "tx": 0.0,
+      "ty": -6.375
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-4e7df9bd",
+   "name": "左右门1-2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-4e7df9bd_1f.png",
+     "draw": "draw/gm-4e7df9bd_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.72326,
+      "tx": 0.0,
+      "ty": 0.0
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 302.3,
+       "y": 450.6
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-4e7df9bd_2f.png",
+     "draw": "draw/gm-4e7df9bd_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.743,
+      "tx": -1.88125,
+      "ty": -1.88125
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 159.4,
+       "y": 177.9
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-4e7df9bd_b1.png",
+     "draw": "draw/gm-4e7df9bd_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.79633,
+      "tx": 1.24062,
+      "ty": -2.48125
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-DA949283",
+   "name": "右中门1-1",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-DA949283_1f.png",
+     "draw": "draw/gm-DA949283_1f.png",
+     "tf_draw_to_game": {
+      "scale": 1.07327,
+      "tx": 0.0,
+      "ty": -15.15
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 339.2,
+       "y": 649.2
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-DA949283_2f.png",
+     "draw": "draw/gm-DA949283_2f.png",
+     "tf_draw_to_game": {
+      "scale": 1.05076,
+      "tx": 2.41875,
+      "ty": 0.0
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 40.2,
+       "y": 173.4
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-DA949283_b1.png",
+     "draw": "draw/gm-DA949283_b1.png",
+     "tf_draw_to_game": {
+      "scale": 1.15031,
+      "tx": -3.38125,
+      "ty": 0.0
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-5e82da05",
+   "name": "左右门1-1",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-5e82da05_1f.png",
+     "draw": "draw/gm-5e82da05_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.87177,
+      "tx": -1.9875,
+      "ty": -5.9625
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 251.7,
+       "y": 537.1
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-5e82da05_2f.png",
+     "draw": "draw/gm-5e82da05_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.93434,
+      "tx": -1.90312,
+      "ty": -3.80625
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 128.0,
+       "y": 532.5
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-5e82da05_b1.png",
+     "draw": "draw/gm-5e82da05_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.9804,
+      "tx": 4.26562,
+      "ty": -21.32812
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-259d066c",
+   "name": "三个门1",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-259d066c_1f.png",
+     "draw": "draw/gm-259d066c_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.83081,
+      "tx": 1.85313,
+      "ty": 1.85313
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 180.5,
+       "y": 561.0
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-259d066c_2f.png",
+     "draw": "draw/gm-259d066c_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.79633,
+      "tx": 0.0,
+      "ty": -10.05
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 254.0,
+       "y": 182.7
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-259d066c_b1.png",
+     "draw": "draw/gm-259d066c_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.81339,
+      "tx": 52.9125,
+      "ty": 0.0
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-f0b73c1c",
+   "name": "右中门2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-f0b73c1c_1f.png",
+     "draw": "draw/gm-f0b73c1c_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.83081,
+      "tx": -2.16562,
+      "ty": -2.16562
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 198.1,
+       "y": 684.1
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-f0b73c1c_2f.png",
+     "draw": "draw/gm-f0b73c1c_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.84861,
+      "tx": -4.1375,
+      "ty": -2.06875
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 416.8,
+       "y": 246.6
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-f0b73c1c_b1.png",
+     "draw": "draw/gm-f0b73c1c_b1.png",
+     "tf_draw_to_game": {
+      "scale": 1.0014,
+      "tx": 0.0,
+      "ty": -7.09375
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-0c96f737",
+   "name": "三个门2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-0c96f737_1f.png",
+     "draw": "draw/gm-0c96f737_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.95435,
+      "tx": 2.55625,
+      "ty": 15.3375
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 231.6,
+       "y": 802.7
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-0c96f737_2f.png",
+     "draw": "draw/gm-0c96f737_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.95435,
+      "tx": 4.20625,
+      "ty": 2.10312
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 16.6,
+       "y": 378.1
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-0c96f737_b1.png",
+     "draw": "draw/gm-0c96f737_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.87177,
+      "tx": 120.75,
+      "ty": -2.625
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-9b1c9548",
+   "name": "左中门1-1",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-9b1c9548_1f.png",
+     "draw": "draw/gm-9b1c9548_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.9804,
+      "tx": 0.0,
+      "ty": -448.63125
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 235.3,
+       "y": 660.2
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-9b1c9548_2f.png",
+     "draw": "draw/gm-9b1c9548_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.93434,
+      "tx": -1.74688,
+      "ty": -29.69688
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 105.7,
+       "y": 406.6
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-9b1c9548_b1.png",
+     "draw": "draw/gm-9b1c9548_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.79633,
+      "tx": 40.6875,
+      "ty": 0.0
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-9a7ac078",
+   "name": "左中门2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-9a7ac078_1f.png",
+     "draw": "draw/gm-9a7ac078_1f.png",
+     "tf_draw_to_game": {
+      "scale": 1.09626,
+      "tx": 9.1625,
+      "ty": -4.58125
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 299.7,
+       "y": 649.9
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-9a7ac078_2f.png",
+     "draw": "draw/gm-9a7ac078_2f.png",
+     "tf_draw_to_game": {
+      "scale": 1.12618,
+      "tx": 10.725,
+      "ty": 2.68125
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 811.4,
+       "y": 229.0
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-9a7ac078_b1.png",
+     "draw": "draw/gm-9a7ac078_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.83081,
+      "tx": -5.975,
+      "ty": 89.625
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-77602984",
+   "name": "右中门3",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-77602984_1f.png",
+     "draw": "draw/gm-77602984_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.91474,
+      "tx": 0.0,
+      "ty": -383.05
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 173.8,
+       "y": 640.5
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-77602984_2f.png",
+     "draw": "draw/gm-77602984_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.91474,
+      "tx": 2.04688,
+      "ty": 4.09375
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 222.5,
+       "y": 272.1
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-77602984_b1.png",
+     "draw": "draw/gm-77602984_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.55128,
+      "tx": -31.875,
+      "ty": 142.10938
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-a9ce250e",
+   "name": "三个门3",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-a9ce250e_1f.png",
+     "draw": "draw/gm-a9ce250e_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.93434,
+      "tx": 0.0,
+      "ty": -4.325
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 200.9,
+       "y": 577.8
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-a9ce250e_2f.png",
+     "draw": "draw/gm-a9ce250e_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.93434,
+      "tx": -2.10312,
+      "ty": -10.51562
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 663.1,
+       "y": 310.0
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-a9ce250e_b1.png",
+     "draw": "draw/gm-a9ce250e_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.87177,
+      "tx": -1.30937,
+      "ty": -3.92813
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-2404f84c",
+   "name": "左右门3",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-2404f84c_1f.png",
+     "draw": "draw/gm-2404f84c_1f.png",
+     "tf_draw_to_game": {
+      "scale": 1.07327,
+      "tx": 12.0,
+      "ty": 2.4
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 241.7,
+       "y": 752.6
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-2404f84c_2f.png",
+     "draw": "draw/gm-2404f84c_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.9804,
+      "tx": 2.94062,
+      "ty": 2.94062
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 700.0,
+       "y": 165.7
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-2404f84c_b1.png",
+     "draw": "draw/gm-2404f84c_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.9804,
+      "tx": 16.05937,
+      "ty": 76.72813
+     },
+     "doors": []
+    }
+   ]
+  },
+  {
+   "id": "gm-15782d00",
+   "name": "左中门1-2",
+   "floors": [
+    {
+     "floor": "1f",
+     "mask": "masks/gm-15782d00_1f.png",
+     "draw": "draw/gm-15782d00_1f.png",
+     "tf_draw_to_game": {
+      "scale": 0.89556,
+      "tx": 0.0,
+      "ty": 1.93437
+     },
+     "doors": [
+      {
+       "label": "正门",
+       "x": 214.9,
+       "y": 605.5
+      }
+     ]
+    },
+    {
+     "floor": "2f",
+     "mask": "masks/gm-15782d00_2f.png",
+     "draw": "draw/gm-15782d00_2f.png",
+     "tf_draw_to_game": {
+      "scale": 0.81339,
+      "tx": 3.14375,
+      "ty": -12.575
+     },
+     "doors": [
+      {
+       "label": "阳台门",
+       "x": 322.8,
+       "y": 180.2
+      }
+     ]
+    },
+    {
+     "floor": "b1",
+     "mask": "masks/gm-15782d00_b1.png",
+     "draw": "draw/gm-15782d00_b1.png",
+     "tf_draw_to_game": {
+      "scale": 0.89044,
+      "tx": -1.4,
+      "ty": 0.0
+     },
+     "doors": []
+    }
+   ]
+  }
+ ]
+}

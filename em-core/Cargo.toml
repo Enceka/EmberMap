@@ -1,0 +1,20 @@
+[package]
+name = "em-core"
+version = "0.1.0"
+edition = "2021"
+description = "EmberMap 匹配核心：结构掩码提取 + 多尺度掩码相关搜索（无 OpenCV 依赖）"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rustfft = "6"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+# dev 模式下图像处理太慢，测试也用优化编译
+[profile.dev]
+opt-level = 2

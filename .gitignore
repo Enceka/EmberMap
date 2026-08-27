@@ -2,3 +2,6 @@
 build/
 __pycache__/
 .DS_Store
+em-core/target/
+app/src-tauri/target/
+app/node_modules/
