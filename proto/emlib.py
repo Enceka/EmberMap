@@ -216,8 +216,8 @@ def load_library(lib_dir):
 # 匹配：多尺度掩码相关
 # ---------------------------------------------------------------------------
 
-MATCH_LONG_EDGE = 160   # 参考掩码降采样后的长边
-SCALES = np.geomspace(0.5, 2.0, 15)  # 查询相对参考的尺度搜索范围
+MATCH_LONG_EDGE = 160   # 粗筛时参考掩码降采样后的长边
+SCALES = np.geomspace(0.5, 2.0, 21)  # 查询相对参考的尺度搜索范围（步长 ~7%）
 
 
 def _resize_long(mask, long_edge):
@@ -261,35 +261,50 @@ def _score_at_scale(ref_small, q_small):
     return float(best), (loc[0] - px, loc[1] - py)
 
 
-def match_query(q_mask, entries, scales=SCALES, long_edge=MATCH_LONG_EDGE):
-    """查询掩码 vs 参考库全体。返回按得分降序的结果列表。
+def _match_entry(q_mask, ref_mask, scales, long_edge):
+    """单个参考楼层的多尺度搜索。返回 (score, transform) 或 (−1, None)。
 
-    结果含 transform：查询掩码坐标 → 参考掩码(裁剪)坐标的相似变换 (s, tx, ty)，
-    即 ref_xy = q_xy * s + t。
+    transform：查询原图 px → 参考裁剪原图 px 的相似变换，ref_xy = q_xy·s + t。
+    """
+    ref_small, ref_s = _resize_long(ref_mask, long_edge)
+    qh, qw = q_mask.shape
+    best, best_sc, best_off = -1.0, None, None
+    for sc in scales:
+        eff = ref_s * sc
+        tw, th = max(1, round(qw * eff)), max(1, round(qh * eff))
+        if tw > ref_small.shape[1] * 2 or th > ref_small.shape[0] * 2:
+            continue
+        q_small = (cv2.resize(q_mask, (tw, th), interpolation=cv2.INTER_AREA) > 127).astype(np.uint8)
+        s, off = _score_at_scale(ref_small, q_small)
+        if s > best:
+            best, best_sc, best_off = s, sc, off
+    if best_sc is None:
+        return -1.0, None
+    return best, {"scale": float(best_sc),
+                  "tx": best_off[0] / ref_s, "ty": best_off[1] / ref_s}
+
+
+def match_query(q_mask, entries, scales=SCALES, long_edge=MATCH_LONG_EDGE,
+                refine_top=5):
+    """查询掩码 vs 参考库全体：低分辨率粗筛全库，前 refine_top 名在
+    2 倍分辨率、更细尺度步长下精修后重排。返回按得分降序的结果列表。
     """
     results = []
     for e in entries:
-        ref_small, ref_s = _resize_long(e["mask"], long_edge)
-        best = (-1.0, None, None)
-        for sc in scales:
-            # 查询降采样到 参考小图尺度×sc
-            qh, qw = q_mask.shape
-            eff = ref_s * sc
-            tw, th = max(1, round(qw * eff)), max(1, round(qh * eff))
-            if tw > ref_small.shape[1] * 2 or th > ref_small.shape[0] * 2:
-                continue
-            q_small = (cv2.resize(q_mask, (tw, th), interpolation=cv2.INTER_AREA) > 127).astype(np.uint8)
-            s, (dx, dy) = _score_at_scale(ref_small, q_small)
-            if s > best[0]:
-                best = (s, sc, (dx, dy))
-        if best[1] is None:
+        score, tf = _match_entry(q_mask, e["mask"], scales, long_edge)
+        if tf is None:
             continue
-        score, sc, (dx, dy) = best
-        # 换算回原始分辨率：q(px) → ref_crop(px)
-        scale = sc  # q 原图 1px 对应 ref 原图 sc px（都经同一 ref_s 缩放，相消）
-        tx, ty = dx / ref_s, dy / ref_s
         results.append({"variant": e["variant"], "floor": e["floor"], "score": score,
                         "bbox": e["bbox"], "source": e["source"],
-                        "transform": {"scale": scale, "tx": tx, "ty": ty}})
+                        "transform": tf, "mask_shape": e["mask"].shape,
+                        "_mask": e["mask"]})
     results.sort(key=lambda r: -r["score"])
+    for r in results[:refine_top]:
+        fine = r["transform"]["scale"] * np.geomspace(0.92, 1.09, 9)
+        score, tf = _match_entry(q_mask, r["_mask"], fine, long_edge * 2)
+        if tf is not None:
+            r["score"], r["transform"] = score, tf
+    results.sort(key=lambda r: -r["score"])
+    for r in results:
+        del r["_mask"]
     return results
