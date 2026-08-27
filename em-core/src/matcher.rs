@@ -186,25 +186,54 @@ pub fn match_entry(q_mask: &Gray, ref_mask: &Gray, scales: &[f64], long_edge: us
     Some((score, Transform { scale: sc, tx: dx as f64 / ref_s, ty: dy as f64 / ref_s }))
 }
 
-/// 全库匹配：粗筛（长边 160 / 21 档尺度）→ top-5 在 2 倍分辨率细尺度精修重排。
+/// 匹配参数。acquire（首次识别）求准，track（锁定后）求快。
+#[derive(Clone, Copy, Debug)]
+pub struct MatchOpts {
+    pub coarse_long_edge: usize,
+    pub refine_long_edge: usize,
+    pub refine_top: usize,
+    /// 已知尺度先验（查询降采样坐标系下）：只在其附近搜索，省一个数量级
+    pub prior_scale: Option<f64>,
+}
+
+impl Default for MatchOpts {
+    fn default() -> Self {
+        MatchOpts {
+            coarse_long_edge: MATCH_LONG_EDGE,
+            refine_long_edge: MATCH_LONG_EDGE * 2,
+            refine_top: REFINE_TOP,
+            prior_scale: None,
+        }
+    }
+}
+
+/// 全库匹配：粗筛（21 档尺度）→ top-N 在更高分辨率细尺度精修重排。
 pub fn match_query(q_mask: &Gray, masks: &[&Gray]) -> Vec<EntryScore> {
-    let coarse = geomspace(0.5, 2.0, 21);
+    match_query_opts(q_mask, masks, &MatchOpts::default())
+}
+
+pub fn match_query_opts(q_mask: &Gray, masks: &[&Gray], opt: &MatchOpts) -> Vec<EntryScore> {
+    let coarse = match opt.prior_scale {
+        // 有先验：地图缩放在一局内固定，只需覆盖面板裁剪抖动带来的微小变化
+        Some(s) => geomspace(s * 0.88, s * 1.14, 9),
+        None => geomspace(0.5, 2.0, 21),
+    };
     let mut results: Vec<EntryScore> = masks
         .par_iter()
         .enumerate()
         .filter_map(|(i, m)| {
-            match_entry(q_mask, m, &coarse, MATCH_LONG_EDGE)
+            match_entry(q_mask, m, &coarse, opt.coarse_long_edge)
                 .map(|(score, transform)| EntryScore { entry: i, score, transform })
         })
         .collect();
     results.sort_by(|a, b| b.score.total_cmp(&a.score));
-    let top: Vec<usize> = results.iter().take(REFINE_TOP).map(|r| r.entry).collect();
+    let top: Vec<usize> = results.iter().take(opt.refine_top).map(|r| r.entry).collect();
     let refined: Vec<(usize, Option<(f32, Transform)>)> = top
         .par_iter()
         .map(|&e| {
             let base = results.iter().find(|r| r.entry == e).unwrap().transform.scale;
-            let fine: Vec<f64> = geomspace(0.92, 1.09, 9).iter().map(|f| base * f).collect();
-            (e, match_entry(q_mask, masks[e], &fine, MATCH_LONG_EDGE * 2))
+            let fine: Vec<f64> = geomspace(0.94, 1.07, 9).iter().map(|f| base * f).collect();
+            (e, match_entry(q_mask, masks[e], &fine, opt.refine_long_edge))
         })
         .collect();
     for (e, r) in refined {

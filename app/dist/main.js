@@ -9,9 +9,9 @@ const statusEl = $("status");
 const canvas = $("view");
 const ctx = canvas.getContext("2d");
 
-const IDLE_FAST = 350;    // 地图在屏时的轮询间歇 ms
+const IDLE_FAST = 300;    // 地图刚出现/结果变化时的轮询间歇 ms
+const IDLE_STABLE = 800;  // 结果稳定时放缓，省 CPU
 const IDLE_SLOW = 1500;   // 连续未检出后的放缓间歇 ms
-const SURE = 0.85;        // 高置信：新结果免二次确认直接显示
 
 let lastPayload = null;
 let pending = { key: null, n: 0 };  // 低分新结果的 2 帧确认
@@ -138,22 +138,26 @@ async function analyzeOnce(auto) {
     }
     const key = `${p.name}|${p.floor}`;
     if (!p.confident) {
-      // 面板还在但低置信：可疑帧，2 帧缓冲再隐藏
+      // 证据不足（后端仍在多帧投票）：面板在就继续攒证据，不显示叠加
       lowConfMiss += 1;
       if (lowConfMiss >= 2) await hideOverlay();
-      if (!auto) setStatus(`低置信（${p.score.toFixed(2)}），仅供参考：${p.name}·${floorCn(p.floor)}`, "warn");
-      return "miss";
+      const pct = Math.min(99, Math.round((p.evidence / p.evidence_need) * 100));
+      setStatus(
+        `识别中 ${pct}%（当前最像 ${p.name}·${floorCn(p.floor)} ${p.score.toFixed(2)}）`,
+        "warn"
+      );
+      renderCandidates(p.candidates);
+      return "hit"; // 面板在，保持快节奏继续攒证据
     }
     lowConfMiss = 0;
-    // 低分新结果需连续 2 帧；高置信或结果未变则直接采用
-    if (auto && key !== shownKey && p.score < SURE) {
-      if (pending.key === key) pending.n += 1;
-      else pending = { key, n: 1 };
-      if (pending.n < 2) return "hit";
-    }
     shownKey = key;
     lastPayload = p;
-    setStatus(`${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}`, "ok");
+    const tag = p.phase === "tracking" ? "跟踪" : "已锁定";
+    setStatus(
+      `${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}　` +
+      `领先次佳 ${p.advantage.toFixed(3)}　${tag}`,
+      "ok"
+    );
     renderCandidates(p.candidates);
     await render(p);
     await pushOverlay(false);
@@ -169,10 +173,15 @@ async function analyzeOnce(auto) {
 
 async function watchLoop() {
   let misses = 0;
+  let prevKey = null;
   while (watching) {
     const r = await analyzeOnce(true);
     misses = r === "hit" ? 0 : misses + 1;
-    await sleep(misses >= 3 ? IDLE_SLOW : IDLE_FAST);
+    let idle = IDLE_FAST;
+    if (misses >= 3) idle = IDLE_SLOW;
+    else if (r === "hit" && shownKey && shownKey === prevKey) idle = IDLE_STABLE;
+    prevKey = shownKey;
+    await sleep(idle);
   }
 }
 

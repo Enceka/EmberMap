@@ -22,6 +22,8 @@ pub struct Candidate {
     pub floor: String,
     pub score: f32,
     pub transform: Transform,
+    /// 降采样坐标系下的尺度，作为下一帧 track 的先验（与分辨率无关地稳定）
+    pub scale_ds: f64,
 }
 
 #[derive(Serialize)]
@@ -36,17 +38,62 @@ pub enum Analysis {
     },
 }
 
-/// 分析一帧截图（RGB8 交错）。等价 analyze_opts(.., None)。
-pub fn analyze(rgb: &[u8], w: usize, h: usize, lib: &Library) -> Analysis {
-    analyze_opts(rgb, w, h, lib, None)
+/// 分析参数：首次识别（acquire）求准，锁定后（track）求快。
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// 分析分辨率上限（长边），截图按整数倍盒式降采样到此附近
+    pub target_long_edge: f64,
+    /// 只匹配该变体（None = 全库）。注意锁定后必须周期性全库审计，
+    /// 否则一次误锁会自我确认永不纠正。
+    pub match_opts: matcher::MatchOpts,
 }
 
-/// only：只匹配该变体的楼层（已锁定变体时 13× 提速）；调用方在
-/// 得分掉出门槛时应重新全库扫描。
-/// 高分屏截图先盒式降采样到长边 ~1500（接近参考库像素密度），
+impl Options {
+    /// 首次识别：近全分辨率 + 高精修分辨率 + 更多精修候选，慢而准。
+    pub fn acquire() -> Self {
+        Options {
+            target_long_edge: 2400.0,
+            match_opts: matcher::MatchOpts {
+                coarse_long_edge: 200,
+                refine_long_edge: 520,
+                refine_top: 10,
+                prior_scale: None,
+            },
+        }
+    }
+
+    /// 锁定后跟踪：只匹配锁定变体 + 尺度先验，快而稳；分辨率仍保持较高
+    /// 以保证对齐精度（候选少，成本可控）。
+    pub fn track(prior_scale_ds: f64) -> Self {
+        Options {
+            target_long_edge: 1600.0,
+            match_opts: matcher::MatchOpts {
+                coarse_long_edge: 200,
+                refine_long_edge: 520,
+                refine_top: 3,
+                prior_scale: Some(prior_scale_ds),
+            },
+        }
+    }
+}
+
+/// 分析一帧截图（RGB8 交错），默认 acquire 质量、全库。
+pub fn analyze(rgb: &[u8], w: usize, h: usize, lib: &Library) -> Analysis {
+    analyze_with(rgb, w, h, lib, None, &Options::acquire())
+}
+
+/// only：只匹配该变体的楼层（13× 提速，须配合周期性全库审计）。
+/// 截图先整数倍盒式降采样到 opt.target_long_edge 附近；
 /// 返回的 panel 与 transform 均换算回全分辨率坐标。
-pub fn analyze_opts(rgb: &[u8], w: usize, h: usize, lib: &Library, only: Option<&str>) -> Analysis {
-    let f = (w.max(h) as f64 / 1500.0).round().max(1.0) as usize;
+pub fn analyze_with(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    lib: &Library,
+    only: Option<&str>,
+    opt: &Options,
+) -> Analysis {
+    let f = (w.max(h) as f64 / opt.target_long_edge).round().max(1.0) as usize;
     let (ds, dw, dh) = img::downscale_rgb(rgb, w, h, f);
     let f2 = f * f;
     let m = mask::structure_mask(&ds, dw, dh, (400 / f2).max(100));
@@ -75,7 +122,7 @@ pub fn analyze_opts(rgb: &[u8], w: usize, h: usize, lib: &Library, only: Option<
         .map(|(i, _)| i)
         .collect();
     let masks: Vec<&img::Gray> = sel.iter().map(|&i| &lib.entries[i].mask).collect();
-    let scores = matcher::match_query(&q, &masks);
+    let scores = matcher::match_query_opts(&q, &masks, &opt.match_opts);
     let candidates: Vec<Candidate> = scores
         .iter()
         .map(|s| {
@@ -91,6 +138,7 @@ pub fn analyze_opts(rgb: &[u8], w: usize, h: usize, lib: &Library, only: Option<
                     tx: s.transform.tx,
                     ty: s.transform.ty,
                 },
+                scale_ds: s.transform.scale,
             }
         })
         .collect();

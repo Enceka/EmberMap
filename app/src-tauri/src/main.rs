@@ -9,10 +9,11 @@ use base64::Engine;
 use serde::Serialize;
 use tauri::State;
 
+mod tracker;
+
 struct AppState {
     lib: Mutex<Option<em_core::Library>>,
-    /// 已置信锁定的变体 id：后续帧只匹配该变体 3 层（13× 提速），掉分即全库重扫
-    locked: Mutex<Option<String>>,
+    tracker: Mutex<tracker::Tracker>,
 }
 
 #[derive(Serialize)]
@@ -37,6 +38,13 @@ enum Payload {
     #[serde(rename = "ok")]
     Ok {
         confident: bool,
+        /// acquiring（多帧投票中）| locked（刚锁定）| tracking
+        phase: String,
+        /// 已累计证据 / 锁定所需证据，供 UI 显示识别进度
+        evidence: f32,
+        evidence_need: f32,
+        /// 本帧与次佳变体的分差：越大越可信（姊妹变体常只差 0.03）
+        advantage: f32,
         name: String,
         floor: String,
         score: f32,
@@ -79,21 +87,34 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     ensure_lib(state)?;
     let g = state.lib.lock().unwrap();
     let lib = g.as_ref().unwrap();
-    let only = state.locked.lock().unwrap().clone();
-    let mut analysis = em_core::analyze_opts(&rgb, w, h, lib, only.as_deref());
-    if only.is_some() {
-        // 锁定变体不再过门槛：可能换图/锁错，全库重扫
-        if matches!(&analysis, em_core::Analysis::Matched { confident: false, .. }) {
-            analysis = em_core::analyze_opts(&rgb, w, h, lib, None);
-        }
-    }
-    if let em_core::Analysis::Matched { confident: true, candidates, .. } = &analysis {
-        *state.locked.lock().unwrap() = Some(candidates[0].variant.clone());
-    }
+    // 始终全库扫描：有尺度先验时也只要 0.5-0.9s，换来的是误判能自我纠正。
+    let prior = state.tracker.lock().unwrap().prior_scale_ds;
+    let opts = match prior {
+        Some(s) => em_core::Options::track(s),
+        None => em_core::Options::acquire(),
+    };
+    let analysis = em_core::analyze_with(&rgb, w, h, lib, None, &opts);
     match analysis {
-        em_core::Analysis::NoPanel { reason } => Ok(Payload::NoPanel { reason }),
-        em_core::Analysis::Matched { panel, confident, candidates } => {
-            let best = &candidates[0];
+        em_core::Analysis::NoPanel { reason } => {
+            state.tracker.lock().unwrap().reset();
+            Ok(Payload::NoPanel { reason })
+        }
+        em_core::Analysis::Matched { panel, candidates, .. } => {
+            let flat: Vec<(String, f32)> =
+                candidates.iter().map(|c| (c.variant.clone(), c.score)).collect();
+            let mut tk = state.tracker.lock().unwrap();
+            let dec = tk.update(&flat, em_core::CONFIDENCE_GATE);
+            // 采纳变体的最佳楼层；未采纳时用本帧第一名（仅供参考显示）
+            let best = match &dec.variant {
+                Some(v) => candidates.iter().find(|c| &c.variant == v).unwrap(),
+                None => &candidates[0],
+            };
+            if dec.variant.is_some() {
+                tk.prior_scale_ds = Some(best.scale_ds);
+            }
+            let (phase, evidence, advantage) = (dec.phase.to_string(), dec.evidence, dec.advantage);
+            let confident = dec.variant.is_some();
+            drop(tk);
             let entry = lib
                 .entries
                 .iter()
@@ -129,6 +150,10 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             );
             Ok(Payload::Ok {
                 confident,
+                phase,
+                evidence,
+                evidence_need: tracker::LOCK_ADVANTAGE,
+                advantage,
                 name: entry.name.clone(),
                 floor: entry.floor.clone(),
                 score: best.score,
@@ -185,10 +210,10 @@ async fn analyze_file(path: String, app: tauri::AppHandle) -> Result<Payload, St
     .map_err(|e| e.to_string())?
 }
 
-/// 清除变体锁定，下一帧全库重扫（换局/怀疑锁错时用）
+/// 清除锁定与投票，下一帧从零开始高质量识别（换局/怀疑锁错时用）
 #[tauri::command]
 fn reset_lock(state: State<AppState>) {
-    *state.locked.lock().unwrap() = None;
+    state.tracker.lock().unwrap().reset();
 }
 
 /// 覆盖窗口：透明/无边框/置顶/点击穿透/防捕获，按面板物理像素坐标摆放。
@@ -242,7 +267,7 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState { lib: Mutex::new(None), locked: Mutex::new(None) })
+        .manage(AppState { lib: Mutex::new(None), tracker: Mutex::new(tracker::Tracker::default()) })
         .invoke_handler(tauri::generate_handler![
             analyze_screen,
             analyze_file,
