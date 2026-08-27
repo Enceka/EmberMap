@@ -1,0 +1,20 @@
+[package]
+name = "embermap"
+version = "0.1.0"
+edition = "2021"
+description = "第五人格加页手记地图识别辅助"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+em-core = { path = "../../em-core" }
+xcap = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.dev]
+opt-level = 2

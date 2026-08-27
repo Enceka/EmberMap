@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>EmberMap</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div id="status">就绪——打开游戏内地图后点「抓屏匹配」</div>
+    <div id="controls">
+      <button id="btn-capture">抓屏匹配</button>
+      <label><input type="checkbox" id="chk-watch" /> 自动监测</label>
+      <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
+      <label>叠加 <input type="range" id="rng-alpha" min="0" max="100" value="75" /></label>
+    </div>
+  </header>
+  <main>
+    <canvas id="view"></canvas>
+    <ul id="candidates"></ul>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>
