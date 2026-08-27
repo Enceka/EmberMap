@@ -1,0 +1,91 @@
+name: Release
+
+# 打 tag 即发布：git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 手动发布用的 tag 名（如 v0.1.0-test）
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest      # Apple Silicon
+            target: aarch64-apple-darwin
+            label: macos-arm64
+          - platform: macos-13          # Intel
+            target: x86_64-apple-darwin
+            label: macos-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: linux-x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows-x64
+
+    name: 构建 ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          key: ${{ matrix.target }}
+
+      - name: 安装 Linux 依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf \
+            libxdo-dev libssl-dev
+
+      - name: 校验数据包完整（39 个楼层掩码）
+        shell: bash
+        run: |
+          test -f app/bundle/bundle.json || { echo "缺少 app/bundle/bundle.json"; exit 1; }
+          n=$(ls app/bundle/masks/*.png | wc -l | tr -d ' ')
+          echo "掩码数量：$n"
+          test "$n" -eq 39 || { echo "掩码数量应为 39，实际 $n"; exit 1; }
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: EmberMap ${{ github.event.inputs.tag || github.ref_name }}
+          releaseBody: |
+            第五人格加页手记地图识别辅助（噩梦难度）。
+
+            **平台包**：macOS 用 `.dmg`（Apple Silicon 选 arm64、Intel 选 x64），
+            Windows 用 `-setup.exe`，Linux 用 `.AppImage` 或 `.deb`。
+
+            **首次运行需授权屏幕录制**：
+            - macOS：系统设置 → 隐私与安全性 → 屏幕录制 → 勾选 EmberMap，然后重启应用。
+            - Windows / Linux：无需额外授权。
+
+            **未签名说明**：macOS 首次打开请右键 → 打开；Windows 可能出现
+            SmartScreen 提示，选「更多信息 → 仍要运行」。
+
+            **热键**：⇧⌥M 切换覆盖层，⇧⌥R 重新识别。
+
+            > 本工具只处理屏幕画面，不读取游戏内存、不注入、不模拟操作。
+            > 地图素材版权归原作者所有，仅供学习交流。
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}

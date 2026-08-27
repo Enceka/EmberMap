@@ -5,3 +5,4 @@ __pycache__/
 em-core/target/
 app/src-tauri/target/
 app/node_modules/
+app/src-tauri/gen/

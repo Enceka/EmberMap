@@ -1,6 +1,9 @@
 //! 多尺度掩码相关搜索，对齐 proto/emlib.py 的 match_query/_score_at_scale。
 //! 相关运算用 2D FFT（rustfft），得分 = 0.6·前景命中率 + 0.4·背景命中率。
 
+// 同 img.rs：相关图/频域缓冲需按坐标同时索引多个数组
+#![allow(clippy::needless_range_loop)]
+
 use rayon::prelude::*;
 use rustfft::num_complex::Complex;
 use rustfft::{FftDirection, FftPlanner};
@@ -33,7 +36,7 @@ fn next_fast(mut n: usize) -> usize {
     loop {
         let mut m = n;
         for f in [2, 3, 5] {
-            while m % f == 0 {
+            while m.is_multiple_of(f) {
                 m /= f;
             }
         }
@@ -177,7 +180,7 @@ pub fn match_entry(q_mask: &Gray, ref_mask: &Gray, scales: &[f64], long_edge: us
         }
         let q_small = img::resize_area_binary(q_mask, tw, th);
         if let Some((s, dx, dy)) = score_at_scale(&ref_small, &q_small, &mut planner) {
-            if best.map_or(true, |b| s > b.0) {
+            if best.is_none_or(|b| s > b.0) {
                 best = Some((s, sc, dx, dy));
             }
         }

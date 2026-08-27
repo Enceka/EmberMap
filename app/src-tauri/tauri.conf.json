@@ -23,6 +23,33 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["app", "dmg", "nsis", "deb", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../bundle": "bundle"
+    },
+    "category": "Utility",
+    "shortDescription": "第五人格加页手记地图识别",
+    "longDescription": "识别第五人格加页手记模式的地图变体与楼层，把完整地图对齐叠加显示。仅处理屏幕画面，不读取游戏内存、不注入、不模拟操作。",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]
+      }
+    }
   }
 }

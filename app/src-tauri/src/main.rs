@@ -7,13 +7,15 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use serde::Serialize;
-use tauri::State;
+use tauri::{Emitter, Manager, State};
 
 mod tracker;
 
 struct AppState {
     lib: Mutex<Option<em_core::Library>>,
     tracker: Mutex<tracker::Tracker>,
+    /// 数据包目录：发行版取应用资源目录，开发期取源码树 app/bundle
+    bundle_dir: Mutex<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -62,15 +64,21 @@ enum Payload {
     },
 }
 
-fn bundle_dir() -> PathBuf {
-    // 开发期：源码树里的 app/bundle；发行版打包进资源目录（M3 处理）
+/// 解析数据包目录：优先应用资源目录（发行版），回退源码树（开发期）。
+fn resolve_bundle_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Ok(p) = app.path().resolve("bundle", tauri::path::BaseDirectory::Resource) {
+        if p.join("bundle.json").exists() {
+            return p;
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle")
 }
 
 fn ensure_lib(state: &AppState) -> Result<(), String> {
     let mut g = state.lib.lock().unwrap();
     if g.is_none() {
-        *g = Some(em_core::load_library(&bundle_dir())?);
+        let dir = state.bundle_dir.lock().unwrap().clone();
+        *g = Some(em_core::load_library(&dir)?);
     }
     Ok(())
 }
@@ -359,11 +367,54 @@ fn overlay_hide(app: tauri::AppHandle) {
     }
 }
 
-use tauri::Manager;
+
+/// 全局热键：即使焦点在游戏里也能用。前端收到 hotkey 事件后执行对应动作。
+fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
+    let toggle = Shortcut::new(Some(Modifiers::SHIFT | Modifiers::ALT), Code::KeyM);
+    let redo = Shortcut::new(Some(Modifiers::SHIFT | Modifiers::ALT), Code::KeyR);
+    let handle = app.clone();
+    app.plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |_app, sc, ev| {
+                if ev.state() != ShortcutState::Pressed {
+                    return;
+                }
+                let action = if sc == &toggle {
+                    "toggle_overlay"
+                } else if sc == &redo {
+                    "reset_lock"
+                } else {
+                    return;
+                };
+                let _ = handle.emit("hotkey", action);
+            })
+            .with_shortcuts([toggle, redo])
+            .map_err(|e| e.to_string())?
+            .build(),
+    )
+    .map_err(|e| e.to_string())?;
+    eprintln!("[em] 全局热键：⇧⌥M 切换覆盖层，⇧⌥R 重新识别");
+    Ok(())
+}
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState { lib: Mutex::new(None), tracker: Mutex::new(tracker::Tracker::default()) })
+        .manage(AppState {
+            lib: Mutex::new(None),
+            tracker: Mutex::new(tracker::Tracker::default()),
+            bundle_dir: Mutex::new(PathBuf::new()),
+        })
+        .setup(|app| {
+            let dir = resolve_bundle_dir(app.handle());
+            eprintln!("[em] 数据包目录：{}", dir.display());
+            *app.state::<AppState>().bundle_dir.lock().unwrap() = dir;
+            if let Err(e) = register_hotkeys(app.handle()) {
+                eprintln!("[em] 全局热键注册失败（不影响其他功能）：{e}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             analyze_screen,
             analyze_file,

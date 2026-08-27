@@ -117,7 +117,7 @@ pub fn analyze_with(
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| only.map_or(true, |v| e.variant == v))
+        .filter(|(_, e)| only.is_none_or(|v| e.variant == v))
         .map(|(i, _)| i)
         .collect();
     let masks: Vec<&img::Gray> = sel.iter().map(|&i| &lib.entries[i].mask).collect();
@@ -146,7 +146,7 @@ pub fn analyze_with(
             }
         })
         .collect();
-    let confident = candidates.first().map_or(false, |c| c.score >= CONFIDENCE_GATE);
+    let confident = candidates.first().is_some_and(|c| c.score >= CONFIDENCE_GATE);
     let panel = [x * f, y * f, (pw * f).min(w - x * f), (ph * f).min(h - y * f)];
     Analysis::Matched { panel, confident, candidates }
 }

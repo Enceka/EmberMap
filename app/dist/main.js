@@ -217,6 +217,17 @@ $("rng-alpha").addEventListener("input", () => {
 });
 listen("overlay-ready", () => pushOverlay(true));
 
+// 全局热键（焦点在游戏里也生效）：⇧⌥M 切覆盖层，⇧⌥R 重新识别
+listen("hotkey", async (ev) => {
+  if (ev.payload === "toggle_overlay") {
+    const box = $("chk-overlay");
+    box.checked = !box.checked;
+    box.dispatchEvent(new Event("change"));
+  } else if (ev.payload === "reset_lock") {
+    $("btn-reset").click();
+  }
+});
+
 // 启动即按勾选状态开工（默认自动监测 + 覆盖模式）
 overlayMode = $("chk-overlay").checked;
 if ($("chk-watch").checked) {

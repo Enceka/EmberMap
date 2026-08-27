@@ -2,6 +2,10 @@
 //! 语义与 proto/emlib.py（OpenCV 实现）逐项对齐；核形状为欧氏圆盘，
 //! 与 cv2 椭圆核有 ≤1px 边界差异，对下游降采样相关匹配无影响。
 
+// 图像代码里同一个下标要同时索引多个缓冲区（源/目标/标签），
+// 显式 for x in 0..w 比迭代器组合更贴近坐标语义，故豁免该 lint。
+#![allow(clippy::needless_range_loop)]
+
 use rayon::prelude::*;
 
 /// 单通道图，data 长度 = w*h，行主序。
@@ -92,7 +96,7 @@ pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let mn = r.min(g).min(b);
     let d = v - mn;
     if v == 0 || d == 0 {
-        return (0, if v == 0 { 0 } else { 0 }, v as u8);
+        return (0, 0, v as u8); // 全黑或无饱和度：色相无意义，S 记 0
     }
     let s = (d * 255 + v / 2) / v;
     let h = if v == r {

@@ -14,15 +14,28 @@
 - `test/` — 真实游戏截图测试集
 - `build/` — Python 生成物（参考库、质检图、评测输出），不入库
 
-## 应用（M2）
+## 应用
 
 ```bash
-cd app/src-tauri && cargo run    # 开发运行（需系统屏幕录制权限）
+cd app/src-tauri && cargo run --release        # 开发运行
+cd app && npx @tauri-apps/cli build            # 打发行包（dmg/nsis/deb/AppImage）
 ```
 
-功能：抓屏匹配按钮 / 3s 自动监测（连续 2 帧同结果才切换，滤单帧误检）/
-窗口置顶 / 叠加透明度。核心链路全在 Rust（em-core），前端 canvas 用
-screen 混合把黑底手绘图合成到截图上。
+首次运行需授予屏幕录制权限（macOS：系统设置 → 隐私与安全性 → 屏幕录制）。
+
+功能：抓游戏窗口自动识别 / 整层地图叠加（覆盖模式为透明点击穿透窗，
+不挡操作、对抓屏隐形）/ 并排窗口模式 / 窗口置顶 / 叠加透明度 /
+全局热键 **⇧⌥M** 切换覆盖层、**⇧⌥R** 重新识别。
+
+识别策略：首次识别慢而准（全库多尺度，多帧投票攒够证据才锁定，证据不足
+宁可持续显示「识别中」）；锁定后仍每帧全库扫描，锁只作显示粘滞，
+所以误判能在两帧内自我纠正。详见 `app/src-tauri/src/tracker.rs`。
+
+排障：应用把每帧决策写到 stderr（耗时/相位/证据/分差/候选）；
+`EM_DUMP=1` 额外把匹配器所见的裁剪图落到 `/tmp/em_panel.png`。
+
+各平台实现方案（含 Windows 注意事项与 Android 悬浮窗方案）见
+[docs/platforms.md](docs/platforms.md)。
 
 一致性校验（Rust vs Python，两张真实截图）：
 
