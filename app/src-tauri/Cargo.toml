@@ -8,7 +8,7 @@ description = "第五人格加页手记地图识别辅助"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["macos-private-api"] }
 em-core = { path = "../../em-core" }
 xcap = "0.9"
 serde = { version = "1", features = ["derive"] }

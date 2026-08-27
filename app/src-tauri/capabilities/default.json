@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "主窗口：调用后端命令 + 置顶开关",
-  "windows": ["main"],
+  "windows": ["main", "overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-set-always-on-top"

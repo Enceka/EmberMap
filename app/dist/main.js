@@ -1,5 +1,6 @@
 // EmberMap 前端：调用后端匹配，canvas 合成叠加（截图 + 手绘 screen 混合 + 门位）。
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const $ = (id) => document.getElementById(id);
@@ -12,6 +13,36 @@ let pending = { key: null, n: 0 };  // 自动模式持久性过滤：连续 2 �
 let shownKey = null;
 let watchTimer = null;
 let busy = false;
+let overlayMode = false;
+let missCount = 0;           // 连续未检出计数，≥2 隐藏覆盖窗
+
+function overlayArgs(p) {
+  return {
+    payload: {
+      draw_png: p.draw_png,
+      tf: p.tf,
+      doors: p.doors,
+      panel_w: p.panel[2],
+      panel_h: p.panel[3],
+      alpha: $("rng-alpha").value / 100,
+    },
+    x: p.panel[0],
+    y: p.panel[1],
+    w: p.panel[2],
+    h: p.panel[3],
+  };
+}
+
+async function pushOverlay() {
+  if (overlayMode && lastPayload) {
+    try { await invoke("overlay_update", overlayArgs(lastPayload)); } catch (e) { setStatus(String(e), "warn"); }
+  }
+}
+
+async function missOverlay() {
+  missCount += 1;
+  if (overlayMode && missCount >= 2) await invoke("overlay_hide");
+}
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
@@ -76,11 +107,13 @@ async function analyzeOnce(auto) {
     if (p.status === "no_panel") {
       if (!auto) setStatus(p.reason, "warn");
       pending = { key: null, n: 0 };
+      await missOverlay();
       return;
     }
     const key = `${p.name}|${p.floor}`;
     if (!p.confident) {
       if (!auto) setStatus(`低置信（${p.score.toFixed(2)}），结果仅供参考：${p.name}·${floorCn(p.floor)}`, "warn");
+      await missOverlay();
       return;
     }
     // 自动模式：连续 2 帧同结果才切换显示，滤掉单帧漏网误检
@@ -91,9 +124,11 @@ async function analyzeOnce(auto) {
     }
     shownKey = key;
     lastPayload = p;
+    missCount = 0;
     setStatus(`${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}`, "ok");
     renderCandidates(p.candidates);
     await render(p);
+    await pushOverlay();
   } catch (e) {
     setStatus(String(e), "warn");
   } finally {
@@ -112,5 +147,19 @@ $("chk-watch").addEventListener("change", (ev) => {
     setStatus("已停止自动监测");
   }
 });
+$("chk-overlay").addEventListener("change", async (ev) => {
+  overlayMode = ev.target.checked;
+  if (overlayMode) {
+    setStatus("覆盖模式开——识别到地图后自动贴上去（点击穿透，不挡操作）");
+    await pushOverlay();
+  } else {
+    await invoke("overlay_hide");
+  }
+});
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
-$("rng-alpha").addEventListener("input", () => { if (lastPayload) render(lastPayload); });
+$("rng-alpha").addEventListener("input", () => {
+  if (lastPayload) render(lastPayload);
+  pushOverlay();
+});
+// 覆盖窗首次加载完成后补发一帧
+listen("overlay-ready", () => pushOverlay());

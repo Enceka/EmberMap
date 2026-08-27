@@ -163,10 +163,64 @@ fn analyze_file(path: String, state: State<AppState>) -> Result<Payload, String>
     run_analysis(im.into_raw(), w, h, &state)
 }
 
+/// 覆盖窗口：透明/无边框/置顶/点击穿透/防捕获，按面板物理像素坐标摆放。
+/// content_protected 使其对抓屏不可见，持续监测不会被自己的叠加污染。
+#[tauri::command]
+fn overlay_update(
+    app: tauri::AppHandle,
+    payload: serde_json::Value,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
+    use tauri::{Emitter, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+    let win = match app.get_webview_window("overlay") {
+        Some(w) => w,
+        None => {
+            let w = WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("overlay.html".into()))
+                .transparent(true)
+                .decorations(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .shadow(false)
+                .focused(false)
+                .visible(false)
+                .build()
+                .map_err(|e| e.to_string())?;
+            w.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+            w.set_content_protected(true).map_err(|e| e.to_string())?;
+            w
+        }
+    };
+    win.set_position(PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
+    win.set_size(PhysicalSize::new(w, h)).map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    // show 之后再发数据，overlay.html 首次加载时监听器可能尚未就绪，
+    // 前端带重试（首帧由 overlay-ready 事件拉取）
+    win.emit("overlay-data", payload).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn overlay_hide(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.hide();
+    }
+}
+
+use tauri::Manager;
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState { lib: Mutex::new(None) })
-        .invoke_handler(tauri::generate_handler![analyze_screen, analyze_file])
+        .invoke_handler(tauri::generate_handler![
+            analyze_screen,
+            analyze_file,
+            overlay_update,
+            overlay_hide
+        ])
         .run(tauri::generate_context!())
         .expect("EmberMap 启动失败");
 }
