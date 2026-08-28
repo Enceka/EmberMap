@@ -53,7 +53,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev \
-            libpipewire-0.3-dev libdbus-1-dev libclang-dev
+            libpipewire-0.3-dev libdbus-1-dev libclang-dev libgbm-dev
+          # libgbm-dev：xcap 的 Wayland 路径（libwayshot_xcap → gbm）链接 -lgbm，
+          # runner 只自带运行时 libgbm1（仅 .so.1），没有 -dev 的无版本 .so 软链，
+          # 链接期会报 unable to find library -lgbm。
           # 必须用 24.04：xcap 在 Linux 上无条件编译 Wayland 抓屏路径
           # （libspa-sys → pipewire），而 libspa 0.10 需要较新的 pipewire 头文件；
           # 22.04 自带 pipewire 0.3.48，缺 spa_video_info_raw.flags 等字段会编译失败，
