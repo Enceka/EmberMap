@@ -23,8 +23,11 @@ fn main() {
         })
     };
     let mut configs: Vec<(&str, Options)> = vec![
-        mk("旧配置 tle1500 c160 r320 top5", 1500.0, 160, 320, 5, None),
-        mk("acquire tle2400 c200 r520 top10", 2400.0, 200, 520, 10, None),
+        mk("acquire 桌面 tle2400 c200 r520 top10", 2400.0, 200, 520, 10, None),
+        // 移动端当前档位：先由 Kotlin 缩到 2000，再按 tle1000 分析
+        mk("mobile 现档 tle1000 c200 r380 top6", 1000.0, 200, 380, 6, None),
+        mk("mobile 候选 tle1600 c200 r380 top6", 1600.0, 200, 380, 6, None),
+        mk("mobile 候选 tle2000 c200 r520 top8", 2000.0, 200, 520, 8, None),
     ];
     if let Some(p) = prior {
         configs.push(mk("track tle2400 top5 +先验", 2400.0, 200, 520, 5, Some(p)));

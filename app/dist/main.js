@@ -70,6 +70,21 @@ async function render(p) {
   }
 }
 
+/// 排障用：把实际抓到的整帧画到 canvas 上，用户截图即可看出抓到的是什么
+async function drawFrame(b64) {
+  const im = await loadImg(b64);
+  canvas.width = im.width;
+  canvas.height = im.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(im, 0, 0);
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, canvas.width, 26);
+  ctx.fillStyle = "#e3b341";
+  ctx.font = "16px sans-serif";
+  ctx.fillText("这是识别器实际抓到的画面", 8, 19);
+}
+
 function renderCandidates(list) {
   $("candidates").innerHTML = list
     .map((c, i) => `<li class="${i === 0 ? "best" : ""}">${i + 1}. ${c.name} · ${floorCn(c.floor)}　${c.score.toFixed(3)}</li>`)
@@ -147,7 +162,11 @@ async function analyzeOnce(auto) {
       pending = { key: null, n: 0 };
       lowConfMiss = 0;
       await hideOverlay();
-      if (!auto) setStatus(p.reason, "warn");
+      // 自动模式下也要更新状态：否则用户只看到停留不动的旧文字，
+      // 无法判断它到底在不在工作（真机排障时踩过这个坑）
+      setStatus(`未识别到地图（抓到 ${p.frame_w}×${p.frame_h}）：${p.reason}`, "warn");
+      renderCandidates([]);
+      if (p.frame_png) await drawFrame(p.frame_png);
       return "miss";
     }
     const key = `${p.name}|${p.floor}`;

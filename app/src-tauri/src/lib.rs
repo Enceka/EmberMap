@@ -39,7 +39,14 @@ struct CandidateOut {
 #[serde(tag = "status")]
 enum Payload {
     #[serde(rename = "no_panel")]
-    NoPanel { reason: String },
+    NoPanel {
+        reason: String,
+        /// 实际分析的帧尺寸与缩略图：真机排障全靠它，
+        /// 用户截一张图就能看出抓到的到底是什么画面
+        frame_w: usize,
+        frame_h: usize,
+        frame_png: String,
+    },
     #[serde(rename = "ok")]
     Ok {
         confident: bool,
@@ -98,6 +105,21 @@ fn ensure_lib(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// 整帧缩略图（base64 PNG），仅用于排障显示
+fn thumbnail(rgb: &[u8], w: usize, h: usize, long_edge: usize) -> Result<String, String> {
+    let f = (w.max(h) / long_edge).max(1);
+    let (tw, th) = (w / f, h / f);
+    let mut small = vec![0u8; tw * th * 3];
+    for y in 0..th {
+        for x in 0..tw {
+            let src = ((y * f) * w + x * f) * 3;
+            let dst = (y * tw + x) * 3;
+            small[dst..dst + 3].copy_from_slice(&rgb[src..src + 3]);
+        }
+    }
+    png_b64(&small, tw as u32, th as u32)
+}
+
 fn png_b64(rgb: &[u8], w: u32, h: u32) -> Result<String, String> {
     let mut buf = Vec::new();
     image::codecs::png::PngEncoder::new(&mut buf)
@@ -135,7 +157,12 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
         em_core::Analysis::NoPanel { reason } => {
             let forgot = state.tracker.lock().unwrap().on_no_panel();
             eprintln!("[em] {dt:?} 无面板{}：{reason}", if forgot { "(证据已清空)" } else { "(暂停)" });
-            Ok(Payload::NoPanel { reason })
+            Ok(Payload::NoPanel {
+                reason,
+                frame_w: w,
+                frame_h: h,
+                frame_png: thumbnail(&rgb, w, h, 720)?,
+            })
         }
         em_core::Analysis::Matched { panel, candidates, .. } => {
             let flat: Vec<(String, f32)> =
