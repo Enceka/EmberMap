@@ -36,8 +36,6 @@ class CaptureService : Service() {
     private var dpi = 0
     private var curW = 0
     private var curH = 0
-    private var displayListener: DisplayManager.DisplayListener? = null
-    private val swapLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,21 +64,27 @@ class CaptureService : Service() {
                 }
             }, null)
 
+            // 建成正方形（边长 = 屏幕长边），一次建成永不改动。
+            // 原因：屏幕旋转后若 resize()+setSurface()，真机上镜像仍按旧尺寸绘制，
+            // 内容被压进新缓冲区一角、其余全黑；而重建 VirtualDisplay 被系统禁止
+            // （SecurityException: Don't take multiple captures ... on the same instance），
+            // 且尝试重建会连带把投屏停掉。
+            // 正方形缓冲区在两种朝向下都按 1:1 镜像（只是留黑边），不损失分辨率。
             val (w, h, density) = realDisplaySize()
+            val side = maxOf(w, h)
             dpi = density
-            curW = w
-            curH = h
-            val ir = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+            curW = side
+            curH = side
+            val ir = ImageReader.newInstance(side, side, PixelFormat.RGBA_8888, 2)
             display = mp.createVirtualDisplay(
-                "EmberMapCapture", w, h, dpi,
+                "EmberMapCapture", side, side, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 ir.surface, null, null
             )
             projection = mp
             reader = ir
             instance = this
-            watchRotation()
-            Log.i("EmberMap", "投屏管线已建立 ${w}x${h}")
+            Log.i("EmberMap", "投屏管线已建立 ${side}x${side}（屏幕 ${w}x${h}）")
         } catch (e: Exception) {
             Log.e("EmberMap", "建立投屏失败", e)
             lastError = e.message
@@ -151,54 +155,7 @@ class CaptureService : Service() {
         return Triple(m.widthPixels, m.heightPixels, m.densityDpi)
     }
 
-    /**
-     * 跟随屏幕旋转调整虚拟显示器尺寸。
-     *
-     * 必须做：VirtualDisplay 的尺寸在创建时固定，用户在竖屏的本应用里授权后
-     * 切到横屏游戏，横屏画面会被等比缩放塞进竖屏缓冲区——实测面板从 846×1176
-     * 缩到 232×282，13 个变体分数挤在 0.761-0.762、分差 0.001，完全无法识别。
-     */
-    private fun watchRotation() {
-        val dm = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-        val listener = object : DisplayManager.DisplayListener {
-            override fun onDisplayAdded(id: Int) {}
-            override fun onDisplayRemoved(id: Int) {}
-            override fun onDisplayChanged(id: Int) {
-                if (id != Display.DEFAULT_DISPLAY) return
-                val (w, h, density) = realDisplaySize()
-                Log.i("EmberMap", "显示变化：${w}x${h}（当前投屏 ${curW}x${curH}）")
-                if (w == curW && h == curH) return
-                synchronized(swapLock) {
-                    try {
-                        val old = reader
-                        val ir = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-                        display?.resize(w, h, density)
-                        display?.surface = ir.surface
-                        reader = ir
-                        curW = w
-                        curH = h
-                        dpi = density
-                        // 换过 surface 才关旧的，避免取帧线程读到已关闭的 reader
-                        old?.close()
-                        Log.i("EmberMap", "屏幕旋转，投屏尺寸改为 ${w}x${h}")
-                    } catch (e: Exception) {
-                        Log.e("EmberMap", "调整投屏尺寸失败", e)
-                    }
-                }
-            }
-        }
-        dm.registerDisplayListener(listener, null)
-        displayListener = listener
-    }
-
     private fun teardown() {
-        try {
-            displayListener?.let {
-                (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
-                    .unregisterDisplayListener(it)
-            }
-        } catch (_: Exception) {}
-        displayListener = null
         try { display?.release() } catch (_: Exception) {}
         try { reader?.close() } catch (_: Exception) {}
         try { projection?.stop() } catch (_: Exception) {}

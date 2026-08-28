@@ -17,6 +17,9 @@ mod tracker;
 struct AppState {
     lib: Mutex<Option<em_core::Library>>,
     tracker: Mutex<tracker::Tracker>,
+    /// 上一帧的尺寸：变化意味着屏幕旋转或窗口改尺寸，
+    /// 此时地图大小随之改变，尺度先验必须作废
+    last_frame: Mutex<(usize, usize)>,
     /// 数据包目录：发行版取应用资源目录，开发期取源码树 app/bundle
     bundle_dir: Mutex<PathBuf>,
 }
@@ -135,6 +138,18 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     let g = state.lib.lock().unwrap();
     let lib = g.as_ref().unwrap();
     // 始终全库扫描：尺度先验只收窄尺度搜索，不过滤候选，误判才能自我纠正。
+    // 帧尺寸变了（旋转/改窗口）：地图随之缩放，沿用旧尺度先验会把搜索窗口带偏，
+    // 实测表现为旋转后分数掉到 0.69、分差 0.001，直到超时解锁才恢复。
+    {
+        let mut lf = state.last_frame.lock().unwrap();
+        if *lf != (w, h) {
+            if *lf != (0, 0) {
+                eprintln!("[em] 帧尺寸 {:?} → {:?}，重置跟踪状态", *lf, (w, h));
+                state.tracker.lock().unwrap().reset();
+            }
+            *lf = (w, h);
+        }
+    }
     let prior = state.tracker.lock().unwrap().prior_scale_full;
     let mut opts = match prior {
         Some(s) => em_core::Options::track(s),
@@ -149,6 +164,17 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
         opts.target_long_edge = 1000.0;
         opts.match_opts.refine_long_edge = 380;
         opts.match_opts.refine_top = if prior.is_some() { 3 } else { 6 };
+    }
+    // 自检：投屏管线没跟上屏幕旋转时，抓到的帧会几乎全黑（内容被压到一角）。
+    // 单说「未检测到地图面板」会把用户引向错误方向，故单独报出来。
+    let dark = rgb.chunks_exact(3).filter(|p| p[0] < 24 && p[1] < 24 && p[2] < 24).count();
+    if dark * 100 / (w * h).max(1) >= 92 {
+        return Ok(Payload::NoPanel {
+            reason: "抓到的画面几乎全黑，投屏可能未跟上屏幕旋转；请关掉再重新授权投屏".into(),
+            frame_w: w,
+            frame_h: h,
+            frame_png: thumbnail(&rgb, w, h, 720)?,
+        });
     }
     let t0 = std::time::Instant::now();
     let analysis = em_core::analyze_with(&rgb, w, h, lib, None, &opts);
@@ -677,6 +703,7 @@ pub fn run() {
         .manage(AppState {
             lib: Mutex::new(None),
             tracker: Mutex::new(tracker::Tracker::default()),
+            last_frame: Mutex::new((0, 0)),
             bundle_dir: Mutex::new(PathBuf::new()),
         })
         .setup(|app| {

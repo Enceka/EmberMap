@@ -151,6 +151,55 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
         Thread { grabOnWorker(ir, invoke) }.start()
     }
 
+    /** 内容矩形之外的边框是否近乎全黑（判定「留黑边」而非「拉伸填满」） */
+    private fun bandIsBlack(bmp: Bitmap, cx: Int, cy: Int, cw: Int, ch: Int): Boolean {
+        var dark = 0
+        var total = 0
+        val step = 16
+        var y = 0
+        while (y < bmp.height) {
+            var x = 0
+            while (x < bmp.width) {
+                if (x < cx || y < cy || x >= cx + cw || y >= cy + ch) {
+                    val c = bmp.getPixel(x, y)
+                    val luma = ((c shr 16 and 0xFF) * 3 + (c shr 8 and 0xFF) * 6 + (c and 0xFF)) / 10
+                    if (luma < 12) dark++
+                    total++
+                }
+                x += step
+            }
+            y += step
+        }
+        return total > 0 && dark * 100 / total >= 95
+    }
+
+    /**
+     * 当前屏幕真实尺寸（含旋转）。
+     *
+     * 不能用 activity 的 metrics：应用退到后台（正是游戏在前台的场景）时它不跟随
+     * 旋转，实测在竖屏下返回横屏尺寸，导致裁剪取错区域、画面被压扁而认不出地图。
+     * 每次现取一个 window context 才可靠。
+     */
+    @Suppress("DEPRECATION")
+    private fun screenSize(): Pair<Int, Int> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val dm = activity.getSystemService(Context.DISPLAY_SERVICE)
+                    as android.hardware.display.DisplayManager
+                val d = dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+                val wc = activity.createDisplayContext(d)
+                    .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+                val b = wc.getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+                if (b.width() > 0 && b.height() > 0) return Pair(b.width(), b.height())
+            } catch (e: Exception) {
+                Log.w("EmberMap", "window context 取屏幕尺寸失败", e)
+            }
+        }
+        val m = android.util.DisplayMetrics()
+        activity.windowManager.defaultDisplay.getRealMetrics(m)
+        return Pair(m.widthPixels, m.heightPixels)
+    }
+
     /**
      * 悬浮窗带 FLAG_SECURE，不会进入投屏画面——但代价是它覆盖的区域在抓到的帧里
      * 是黑块，而它盖住的恰是地图，于是下一帧就认不出地图（实测表现为识别结果在
@@ -195,7 +244,7 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
             val padded = rowStride / pixelStride
             val bmp = Bitmap.createBitmap(padded, height, Bitmap.Config.ARGB_8888)
             bmp.copyPixelsFromBuffer(plane.buffer)
-            val cropped = if (padded != width) {
+            val full = if (padded != width) {
                 Bitmap.createBitmap(bmp, 0, 0, width, height)
             } else {
                 bmp
@@ -203,16 +252,31 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
 
             // 2000 而非更低：实测缩到 1200 时多次重采样叠加 JPEG 压缩，
             // 会把识别分数压到置信门槛之下（0.73 vs 桌面 0.84）。
-            // Rust 侧还会按 target_long_edge 再降一次，这里只作上限保护。
             val maxEdge = 2000
-            val scale = minOf(1.0, maxEdge.toDouble() / maxOf(width, height))
-            val out = if (scale < 1.0) {
-                Bitmap.createScaledBitmap(
-                    cropped, (width * scale).toInt(), (height * scale).toInt(), true
-                )
+            val (sw, sh) = screenSize()
+
+            // 方形缓冲区里屏幕内容的呈现方式，实测在两种之间摇摆：
+            //   a) 留黑边（内容按原比例居中，四周纯黑）
+            //   b) 拉伸填满（横屏内容被垂直拉伸 2.2 倍）
+            // 匹配器只允许等比缩放，(b) 不纠正必然认错（分数虚高 0.86、分差仅 0.004）。
+            // 因此不猜系统行为：按屏幕尺寸算出「若留黑边则内容应在的矩形」，
+            // 检查该矩形外是否确实全黑，是则裁掉黑边，否则按拉伸处理整体还原比例。
+            val left = ((width - sw) / 2).coerceAtLeast(0)
+            val top = ((height - sh) / 2).coerceAtLeast(0)
+            val hasBars = (left >= 4 || top >= 4) &&
+                bandIsBlack(full, left, top, minOf(sw, width - left), minOf(sh, height - top))
+            val base = if (hasBars) {
+                Bitmap.createBitmap(full, left, top, minOf(sw, width - left), minOf(sh, height - top))
             } else {
-                cropped
+                full
             }
+            val k = minOf(1.0, maxEdge.toDouble() / maxOf(sw, sh))
+            val outW = (sw * k).toInt().coerceAtLeast(1)
+            val outH = (sh * k).toInt().coerceAtLeast(1)
+            val out = if (base.width == outW && base.height == outH) base
+                      else Bitmap.createScaledBitmap(base, outW, outH, true)
+            // 截图 px = 屏幕物理 px × scale
+            val scale = k
 
             val file = File(activity.cacheDir, "em_frame.jpg")
             file.outputStream().use { out.compress(Bitmap.CompressFormat.JPEG, 88, it) }
