@@ -228,10 +228,23 @@ listen("hotkey", async (ev) => {
   }
 });
 
-// 启动即按勾选状态开工（默认自动监测 + 覆盖模式）
-overlayMode = $("chk-overlay").checked;
-if ($("chk-watch").checked) {
-  watching = true;
-  setStatus("自动监测中——打开游戏内地图即自动识别");
-  watchLoop();
-}
+// 按平台能力决定开工方式：Android 尚无抓屏与悬浮窗
+(async () => {
+  let caps = { screen_capture: true, overlay: true };
+  try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
+  if (!caps.screen_capture) {
+    for (const id of ["btn-capture", "chk-watch", "chk-overlay", "chk-top"]) {
+      $(id).disabled = true;
+      $(id).closest("label")?.style.setProperty("opacity", "0.4");
+    }
+    $("hint").textContent = "移动端：投屏取帧与悬浮窗尚未接入，识别核心已就绪";
+    setStatus("Android 端投屏功能开发中", "warn");
+    return;
+  }
+  overlayMode = $("chk-overlay").checked;
+  if ($("chk-watch").checked) {
+    watching = true;
+    setStatus("自动监测中——打开游戏内地图即自动识别");
+    watchLoop();
+  }
+})();

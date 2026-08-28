@@ -331,6 +331,16 @@ async fn analyze_file(path: String, app: tauri::AppHandle) -> Result<Payload, St
     .map_err(|e| e.to_string())?
 }
 
+/// 前端据此决定显示哪些功能：Android 尚无抓屏与悬浮窗
+#[tauri::command]
+fn capabilities() -> serde_json::Value {
+    serde_json::json!({
+        "screen_capture": cfg!(desktop),
+        "overlay": cfg!(desktop),
+        "hotkeys": cfg!(desktop),
+    })
+}
+
 /// 清除锁定与投票，下一帧从零开始高质量识别（换局/怀疑锁错时用）
 #[tauri::command]
 fn reset_lock(state: State<AppState>) {
@@ -419,6 +429,38 @@ fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 从参考库自身合成一个「部分探索」查询并匹配，验证核心可用。
+/// 与 em-core/tests/synth_regression.rs 同思路，此处用于目标平台实机自检。
+#[cfg(mobile)]
+fn self_check(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if let Err(e) = ensure_lib(&state) {
+        eprintln!("[em] 自检失败：加载数据包出错：{e}");
+        return;
+    }
+    let g = state.lib.lock().unwrap();
+    let lib = g.as_ref().unwrap();
+    eprintln!("[em] 自检：参考库 {} 个楼层条目", lib.entries.len());
+
+    let want = &lib.entries[0];
+    let m = &want.mask;
+    let sub = m.crop(m.w / 8, m.h / 8, m.w * 3 / 4, m.h * 3 / 4);
+    let q = em_core::img::resize_area_binary(&sub, (sub.w * 4) / 5, (sub.h * 4) / 5);
+    let masks: Vec<&em_core::img::Gray> = lib.entries.iter().map(|e| &e.mask).collect();
+    let t0 = std::time::Instant::now();
+    let res = em_core::matcher::match_query(&q, &masks);
+    let dt = t0.elapsed();
+    let got = &lib.entries[res[0].entry];
+    let ok = got.variant == want.variant && got.floor == want.floor;
+    eprintln!(
+        "[em] 自检：全库匹配耗时 {dt:?}，结果 {} {} 得分 {:.3} —— {}",
+        got.name,
+        got.floor,
+        res[0].score,
+        if ok { "正确" } else { "错误！" }
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -435,6 +477,13 @@ pub fn run() {
             if let Err(e) = register_hotkeys(app.handle()) {
                 eprintln!("[em] 全局热键注册失败（不影响其他功能）：{e}");
             }
+            // 移动端启动自检：加载参考库并跑一次合成匹配，
+            // 验证识别核心（FFT/rayon/掩码）在该架构上确实可用
+            #[cfg(mobile)]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || self_check(&handle));
+            }
             Ok(())
         });
 
@@ -443,13 +492,18 @@ pub fn run() {
         analyze_screen,
         analyze_file,
         reset_lock,
+        capabilities,
         overlay_update,
         overlay_hide
     ]);
     // Android：抓屏与悬浮窗需 Kotlin 插件（MediaProjection / SYSTEM_ALERT_WINDOW），
     // 尚未接入，先只暴露与平台无关的命令
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![analyze_file, reset_lock]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        analyze_file,
+        reset_lock,
+        capabilities
+    ]);
 
     builder
         .run(tauri::generate_context!())

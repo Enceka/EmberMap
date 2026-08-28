@@ -8,7 +8,7 @@
 | macOS | xcap 抓游戏窗口（需屏幕录制授权） | 透明置顶点击穿透窗（`content_protected` 防自拍） | 已实现并实机验证 |
 | Windows | xcap（Windows Graphics Capture / BitBlt） | 同上，底层是 `WS_EX_LAYERED\|WS_EX_TRANSPARENT` | 代码通用，待实机验证 |
 | Linux | xcap（X11 可用；Wayland 受限） | 同上（X11 下正常，Wayland 合成器可能不支持置顶穿透） | 代码通用，待实机验证 |
-| Android | MediaProjection 投屏授权 | SYSTEM_ALERT_WINDOW 悬浮窗 | 见下方方案，未实现 |
+| Android | MediaProjection 投屏授权 | SYSTEM_ALERT_WINDOW 悬浮窗 | **识别核心已在真机架构验证**，取帧与悬浮窗待实现 |
 
 ## Windows
 
@@ -32,7 +32,38 @@
 
 Android 上没有「窗口」概念可用，所以两件事都得换实现，但 `em-core` 一行不用改。
 
-### 拿画面：MediaProjection
+### 已完成（通路验证）
+
+APK 可构建并在模拟器（android-34 / arm64-v8a）实测通过：
+
+```
+[em] 数据包目录：/data/user/0/net.yeah.enceka.embermap/bundle
+[em] 自检：参考库 39 个楼层条目
+[em] 自检：全库匹配耗时 2.47s，结果 右中门1-2 1f 得分 0.970 —— 正确
+```
+
+即掩码运算、FFT 相关、rayon 并行在 ARM Android 上均可用，识别结果与桌面一致。
+产物 34MB，含 arm64-v8a 与 x86_64 两份 `libembermap_lib.so`。
+
+两个落地时踩到的点：
+
+- **资源读取**：Tauri 的 `resource_dir()` 在 Android 上返回 `asset://` URI，
+  `std::fs` 读不了。解法是 `MainActivity.kt` 启动时把 `assets/bundle` 解压到
+  `dataDir/bundle`（以 `bundle.json` 大小作版本标记避免重复拷贝），
+  Rust 侧从 `app_data_dir()/bundle` 读取。
+- **构建工具**：用 `cargo tauri android init` 而非 `npx`，
+  否则生成的 Gradle 任务会硬编码调用 `npm`，而 `src-tauri/` 下没有 package.json。
+
+构建命令：
+
+```bash
+export ANDROID_HOME=<sdk> NDK_HOME=<sdk>/ndk/<版本>
+cargo tauri android build --target aarch64 --target x86_64 --apk
+```
+
+### 待实现
+
+#### 拿画面：MediaProjection
 
 Android 不允许后台静默截屏，唯一合规路径是 **MediaProjection**——
 用户主动点授权（系统弹窗「EmberMap 将开始截取您屏幕上显示的内容」），
@@ -54,7 +85,7 @@ MediaProjectionManager.createScreenCaptureIntent()   // 拉起系统授权弹窗
   `SurfaceView` 加 `setSecure(true)`（FLAG_SECURE 的层不会进入投屏画面）。
   推荐后者：零闪烁，且与桌面端 `content_protected` 语义一致。
 
-### 显示：SYSTEM_ALERT_WINDOW 悬浮窗
+#### 显示：SYSTEM_ALERT_WINDOW 悬浮窗
 
 ```
 Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其他应用上层」
@@ -71,7 +102,7 @@ Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其
 控制入口用一个小的可拖动圆钮（另一个 `TOUCHABLE` 的悬浮窗），
 避免为了切换开关而退出游戏。
 
-### em-core 怎么接进去
+#### em-core 怎么接进去
 
 两条路，推荐第一条：
 
@@ -85,10 +116,10 @@ Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其
 无论哪条，`app/bundle/`（39 张掩码 + 手绘图 + 元数据，约 12 MB）作为
 `assets/` 打进 APK，首次启动解压到 `filesDir` 即可被 `load_library` 读取。
 
-### 性能预算
+#### 性能预算
 
-桌面端一次全库扫描约 0.8-1.5 秒（M 系列多核）。手机 SoC 大核性能约为其
-1/3~1/2，且发热降频，所以：
+桌面端一次全库扫描约 0.8-1.5 秒（M 系列多核），模拟器实测 2.47 秒，
+真机预计相当或略快。因此：
 
 - 分析分辨率降到长边 ~1200（`Options.target_long_edge`，本来就是参数）；
 - 轮询间隔放宽到 1.5-2 秒，锁定后可拉到 3 秒（跟踪只需修正位置与缩放）；
@@ -96,7 +127,7 @@ Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其
 
 预计锁定前每帧 2-3 秒、锁定后 1-1.5 秒，对「打开地图看一眼」的使用节奏够用。
 
-### 合规提醒
+#### 合规提醒
 
 Android 端的悬浮窗叠在游戏上，观感上最接近「外挂」。本方案不读内存、
 不注入、不模拟点击，只处理用户主动授权的投屏画面；但 Android 端的
