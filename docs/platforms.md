@@ -67,6 +67,14 @@ fl=NOT_FOCUSABLE NOT_TOUCHABLE LAYOUT_NO_LIMITS SECURE
   `getMediaProjection()`，否则抛 SecurityException。插件不能在主线程
   `sleep` 等待服务启动——`onStartCommand` 同在主线程，等待会把服务自己饿死。
   正解是把投屏创建整个放进服务内部顺序执行，插件用 Handler 非阻塞轮询就绪。
+- **横屏（游戏的实际姿态）**：`VirtualDisplay` 尺寸在创建时固定，用户在竖屏的
+  本应用里授权后切到横屏游戏，横屏画面会被等比缩放塞进竖屏缓冲区——实测面板从
+  846×1176 缩到 232×282，13 个变体分数挤在 0.761-0.762、分差 0.001，完全无法识别。
+  解法是监听 `DisplayManager.DisplayListener`，旋转时 `resize` 虚拟显示器并换
+  `ImageReader`。取尺寸有坑：服务是非可视上下文，`Display.getRealMetrics` 与
+  `Display.rotation` 拿到的是显示器「基础信息」，旋转后仍报 1080×2400 / rotation 0
+  （dumpsys 里只有 `mOverrideDisplayInfo` 变），必须用
+  `createDisplayContext(d).createWindowContext(...)` 的 `maximumWindowMetrics`。
 - **FLAG_SECURE 与自我遮挡**：悬浮窗加 `FLAG_SECURE` 后确实不进投屏画面，
   但它覆盖的区域在抓到的帧里变成黑块，而它盖住的恰是地图——实测表现为识别
   结果在「认出」与「无面板」之间来回震荡。解法是取帧瞬间把悬浮窗设为
@@ -143,7 +151,8 @@ Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其
 - 轮询间隔放宽到 1.5-2 秒，锁定后可拉到 3 秒（跟踪只需修正位置与缩放）；
 - rayon 线程数限制为大核数量，避免和游戏抢 CPU 导致掉帧。
 
-模拟器实测：首次锁定约 5 秒，跟踪每帧约 3.5 秒。真机预计更快，待验证。
+模拟器实测：首次锁定约 5 秒，跟踪每帧约 3.5 秒（横屏 3.0-3.6 秒）。
+真机预计更快，待验证。
 
 一个反直觉的实测结论：**取帧分辨率不能为了省时间而调低**。把 Kotlin 侧的
 取帧上限从 2000 降到 1200 时，多次重采样叠加 JPEG 压缩会把识别分数从 0.84
