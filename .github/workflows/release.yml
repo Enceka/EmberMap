@@ -1,6 +1,7 @@
 name: Release
 
 # 打 tag 即发布：git tag v0.1.0 && git push origin v0.1.0
+# 四个平台构建完毕并全部上传后，publish job 自动把草稿 Release 转为正式
 on:
   push:
     tags: ["v*"]
@@ -97,3 +98,17 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+  # 四个平台先各自上传到同一个草稿 Release（草稿期间外部看不到，
+  # 避免只传完 macOS 就被人下到半份产物），全部成功后再一次性转正式。
+  # 任一平台失败则此 job 跳过，Release 留作草稿，可修完重跑。
+  publish:
+    name: 发布 Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 草稿转正式
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
