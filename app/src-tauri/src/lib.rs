@@ -21,7 +21,7 @@ struct AppState {
     bundle_dir: Mutex<PathBuf>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 struct DoorOut {
     label: String,
     x: f64,
@@ -56,8 +56,10 @@ enum Payload {
         candidates: Vec<CandidateOut>,
         /// 面板裁剪截图 PNG（base64）
         shot_png: String,
-        /// 匹配变体该层的手绘图 PNG（base64）
+        /// 匹配变体该层的手绘图 PNG（base64，桌面前端 canvas 用）
         draw_png: String,
+        /// 同一张手绘图在磁盘上的路径（Android 悬浮窗直接读，免 base64 过桥）
+        draw_path: String,
         /// 手绘图 → 显示区域坐标的相似变换
         tf: em_core::Transform,
         doors: Vec<DoorOut>,
@@ -112,10 +114,20 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     let lib = g.as_ref().unwrap();
     // 始终全库扫描：尺度先验只收窄尺度搜索，不过滤候选，误判才能自我纠正。
     let prior = state.tracker.lock().unwrap().prior_scale_full;
-    let opts = match prior {
+    let mut opts = match prior {
         Some(s) => em_core::Options::track(s),
         None => em_core::Options::acquire(),
     };
+    // 移动端算力有限，用更轻的档位：分析分辨率减半、精修分辨率与候选数下调。
+    // 注意取帧分辨率不能跟着降——实测取帧缩到 1200 会让重采样与 JPEG 损失
+    // 把分数压到门槛下（0.73），而高保真取帧 + 低分辨率分析仍有 0.84。
+    // 主要耗时在匹配而非掩码提取，故这里同时收窄精修。
+    #[cfg(mobile)]
+    {
+        opts.target_long_edge = 1000.0;
+        opts.match_opts.refine_long_edge = 380;
+        opts.match_opts.refine_top = if prior.is_some() { 3 } else { 6 };
+    }
     let t0 = std::time::Instant::now();
     let analysis = em_core::analyze_with(&rgb, w, h, lib, None, &opts);
     let dt = t0.elapsed();
@@ -226,6 +238,7 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                     .collect(),
                 shot_png: png_b64(&crop, pw as u32, ph as u32)?,
                 draw_png,
+                draw_path: entry.draw_path.to_string_lossy().into_owned(),
                 tf,
                 doors,
                 // 交给前端定位覆盖窗的是「整层显示区域」，不是已探索面板
@@ -331,12 +344,182 @@ async fn analyze_file(path: String, app: tauri::AppHandle) -> Result<Payload, St
     .map_err(|e| e.to_string())?
 }
 
-/// 前端据此决定显示哪些功能：Android 尚无抓屏与悬浮窗
+// ---------------------------------------------------------------------------
+// Android 取帧：经 Kotlin 插件走 MediaProjection
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "android")]
+mod android_capture {
+    use serde::Deserialize;
+    use tauri::plugin::PluginHandle;
+
+    #[derive(Deserialize)]
+    pub struct Granted {
+        pub granted: bool,
+        pub reason: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct Frame {
+        pub path: String,
+        /// Kotlin 侧缩放系数（截图 px = 屏幕物理 px × scale）
+        pub scale: f64,
+    }
+
+    #[derive(Deserialize)]
+    pub struct Capturing {
+        pub capturing: bool,
+    }
+
+    pub fn request(h: &PluginHandle<tauri::Wry>) -> Result<Granted, String> {
+        h.run_mobile_plugin("requestCapture", ()).map_err(|e| e.to_string())
+    }
+    pub fn stop(h: &PluginHandle<tauri::Wry>) -> Result<(), String> {
+        h.run_mobile_plugin::<serde_json::Value>("stopCapture", ())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    pub fn is_capturing(h: &PluginHandle<tauri::Wry>) -> Result<Capturing, String> {
+        h.run_mobile_plugin("isCapturing", ()).map_err(|e| e.to_string())
+    }
+    pub fn grab(h: &PluginHandle<tauri::Wry>) -> Result<Frame, String> {
+        h.run_mobile_plugin("grabFrame", ()).map_err(|e| e.to_string())
+    }
+}
+
+/// Android：拉起系统投屏授权（用户点「立即开始」后才可取帧）
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn request_capture(app: tauri::AppHandle) -> Result<bool, String> {
+    let h = app.state::<AndroidPlugin>().0.clone();
+    let r = android_capture::request(&h)?;
+    if !r.granted {
+        return Err(r.reason.unwrap_or_else(|| "投屏授权未通过".into()));
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn stop_capture(app: tauri::AppHandle) -> Result<(), String> {
+    android_capture::stop(&app.state::<AndroidPlugin>().0)
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn capture_active(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(android_capture::is_capturing(&app.state::<AndroidPlugin>().0)?.capturing)
+}
+
+/// Android 版 analyze_screen：取帧 → 识别。坐标换算回屏幕物理像素，
+/// 供悬浮窗定位（Kotlin 侧按 maxLongEdge 缩过，故需除以 scale）。
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
+    let frame = {
+        let h = app.state::<AndroidPlugin>().0.clone();
+        android_capture::grab(&h)?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let im = image::open(&frame.path).map_err(|e| e.to_string())?.to_rgb8();
+        let (w, h) = (im.width() as usize, im.height() as usize);
+        let mut payload = run_analysis(im.into_raw(), w, h, &app.state::<AppState>())?;
+        if let Payload::Ok { view, .. } = &mut payload {
+            let inv = 1.0 / frame.scale.max(1e-6);
+            for v in view.iter_mut() {
+                *v = (*v as f64 * inv).round() as i32;
+            }
+        }
+        Ok(payload)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "android")]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlayArgs {
+    draw_path: String,
+    scale: f64,
+    tx: f64,
+    ty: f64,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    alpha: f64,
+    doors: Vec<DoorOut>,
+}
+
+/// Android 悬浮窗：内容由 Kotlin 的 OverlayView 绘制（中文标签用系统字体最省事）
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn overlay_update(
+    app: tauri::AppHandle,
+    draw_path: String,
+    tf: serde_json::Value,
+    doors: Vec<DoorOut>,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    alpha: f64,
+) -> Result<(), String> {
+    let args = OverlayArgs {
+        draw_path,
+        scale: tf["scale"].as_f64().unwrap_or(1.0),
+        tx: tf["tx"].as_f64().unwrap_or(0.0),
+        ty: tf["ty"].as_f64().unwrap_or(0.0),
+        x: x as i32,
+        y: y as i32,
+        w: w as i32,
+        h: h as i32,
+        alpha,
+        doors,
+    };
+    app.state::<AndroidPlugin>()
+        .0
+        .run_mobile_plugin::<serde_json::Value>("showOverlay", args)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn overlay_hide(app: tauri::AppHandle) -> Result<(), String> {
+    app.state::<AndroidPlugin>()
+        .0
+        .run_mobile_plugin::<serde_json::Value>("hideOverlay", ())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn request_overlay_permission(app: tauri::AppHandle) -> Result<bool, String> {
+    #[derive(serde::Deserialize)]
+    struct Granted { granted: bool }
+    let r: Granted = app
+        .state::<AndroidPlugin>()
+        .0
+        .run_mobile_plugin("requestOverlayPermission", ())
+        .map_err(|e| e.to_string())?;
+    Ok(r.granted)
+}
+
+/// 持有 Kotlin 插件句柄
+#[cfg(target_os = "android")]
+struct AndroidPlugin(tauri::plugin::PluginHandle<tauri::Wry>);
+
+/// 前端据此决定显示哪些功能：Android 尚无悬浮窗
 #[tauri::command]
 fn capabilities() -> serde_json::Value {
     serde_json::json!({
-        "screen_capture": cfg!(desktop),
-        "overlay": cfg!(desktop),
+        // Android 经 MediaProjection 取帧，但需用户先授权
+        "screen_capture": true,
+        "needs_capture_permission": cfg!(target_os = "android"),
+        "overlay": true,
         "hotkeys": cfg!(desktop),
     })
 }
@@ -499,11 +682,37 @@ pub fn run() {
     // Android：抓屏与悬浮窗需 Kotlin 插件（MediaProjection / SYSTEM_ALERT_WINDOW），
     // 尚未接入，先只暴露与平台无关的命令
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        analyze_file,
-        reset_lock,
-        capabilities
-    ]);
+    let builder = builder
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("emcapture")
+                .setup(|app, api: tauri::plugin::PluginApi<tauri::Wry, ()>| {
+                    #[cfg(target_os = "android")]
+                    {
+                        use tauri::Manager;
+                        let handle = api.register_android_plugin(
+                            "net.yeah.enceka.embermap",
+                            "CapturePlugin",
+                        )?;
+                        app.manage(AndroidPlugin(handle));
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    let _ = (app, api);
+                    Ok(())
+                })
+                .build(),
+        )
+        .invoke_handler(tauri::generate_handler![
+            analyze_screen,
+            analyze_file,
+            reset_lock,
+            capabilities,
+            request_capture,
+            stop_capture,
+            capture_active,
+            request_overlay_permission,
+            overlay_update,
+            overlay_hide
+        ]);
 
     builder
         .run(tauri::generate_context!())

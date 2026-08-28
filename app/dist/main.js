@@ -22,6 +22,7 @@ let overlayMode = false;
 let overlayVisible = false;
 let lowConfMiss = 0;       // 面板在但低置信的连续帧数
 let lastPushed = null;     // 上次推给覆盖层的指纹，避免重复推送
+let androidOverlay = false; // Android 悬浮窗由 Kotlin 绘制，参数形状与桌面不同
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const floorCn = (f) => ({ "1f": "一楼", "2f": "二楼", b1: "地下室" }[f] || f);
@@ -76,6 +77,19 @@ function renderCandidates(list) {
 }
 
 function overlayArgs(p) {
+  if (androidOverlay) {
+    // Android：手绘图已解压在磁盘上，直接传路径由 Kotlin 读，免 base64 过桥
+    return {
+      drawPath: p.draw_path,
+      tf: p.tf,
+      doors: p.doors,
+      x: p.view[0],
+      y: p.view[1],
+      w: p.view[2],
+      h: p.view[3],
+      alpha: $("rng-alpha").value / 100,
+    };
+  }
   return {
     payload: {
       draw_png: p.draw_png,
@@ -228,19 +242,60 @@ listen("hotkey", async (ev) => {
   }
 });
 
-// 按平台能力决定开工方式：Android 尚无抓屏与悬浮窗
+// 按平台能力决定开工方式：Android 需先授权投屏，且暂无悬浮窗
 (async () => {
-  let caps = { screen_capture: true, overlay: true };
+  let caps = { screen_capture: true, overlay: true, needs_capture_permission: false };
   try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
-  if (!caps.screen_capture) {
-    for (const id of ["btn-capture", "chk-watch", "chk-overlay", "chk-top"]) {
-      $(id).disabled = true;
-      $(id).closest("label")?.style.setProperty("opacity", "0.4");
-    }
-    $("hint").textContent = "移动端：投屏取帧与悬浮窗尚未接入，识别核心已就绪";
-    setStatus("Android 端投屏功能开发中", "warn");
+
+  if (caps.needs_capture_permission) {
+    // Android：悬浮窗由系统权限管控，勾选时按需申请
+    androidOverlay = caps.overlay;
+    $("chk-top").disabled = true;
+    $("chk-top").closest("label")?.style.setProperty("opacity", "0.4");
+    $("chk-overlay").checked = false;
+    overlayMode = false;
+    $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
+    $("chk-overlay").addEventListener("change", async (ev) => {
+      if (!ev.target.checked) return;
+      try {
+        const ok = await invoke("request_overlay_permission");
+        if (!ok) {
+          ev.target.checked = false;
+          overlayMode = false;
+          setStatus("未获得悬浮窗权限", "warn");
+        }
+      } catch (e) {
+        ev.target.checked = false;
+        overlayMode = false;
+        setStatus(String(e), "warn");
+      }
+    });
+  }
+
+  if (caps.needs_capture_permission) {
+    // Android：先授权投屏才能取帧；授权在停止投屏后失效，故每次启动都要点
+    const grant = $("btn-grant");
+    grant.hidden = false;
+    $("chk-watch").checked = false;
+    setStatus("请先点「授权投屏」，然后切到游戏打开地图", "warn");
+    grant.addEventListener("click", async () => {
+      grant.disabled = true;
+      setStatus("等待系统授权…");
+      try {
+        await invoke("request_capture");
+        grant.textContent = "投屏已授权";
+        $("chk-watch").checked = true;
+        watching = true;
+        setStatus("自动监测中——切到游戏打开地图即自动识别");
+        watchLoop();
+      } catch (e) {
+        grant.disabled = false;
+        setStatus(String(e), "warn");
+      }
+    });
     return;
   }
+
   overlayMode = $("chk-overlay").checked;
   if ($("chk-watch").checked) {
     watching = true;

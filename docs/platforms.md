@@ -8,7 +8,7 @@
 | macOS | xcap 抓游戏窗口（需屏幕录制授权） | 透明置顶点击穿透窗（`content_protected` 防自拍） | 已实现并实机验证 |
 | Windows | xcap（Windows Graphics Capture / BitBlt） | 同上，底层是 `WS_EX_LAYERED\|WS_EX_TRANSPARENT` | 代码通用，待实机验证 |
 | Linux | xcap（X11 可用；Wayland 受限） | 同上（X11 下正常，Wayland 合成器可能不支持置顶穿透） | 代码通用，待实机验证 |
-| Android | MediaProjection 投屏授权 | SYSTEM_ALERT_WINDOW 悬浮窗 | **识别核心已在真机架构验证**，取帧与悬浮窗待实现 |
+| Android | MediaProjection 投屏授权 | SYSTEM_ALERT_WINDOW 悬浮窗 | 已实现，模拟器验证通过（真机待测） |
 
 ## Windows
 
@@ -32,7 +32,7 @@
 
 Android 上没有「窗口」概念可用，所以两件事都得换实现，但 `em-core` 一行不用改。
 
-### 已完成（通路验证）
+### 已完成
 
 APK 可构建并在模拟器（android-34 / arm64-v8a）实测通过：
 
@@ -45,7 +45,17 @@ APK 可构建并在模拟器（android-34 / arm64-v8a）实测通过：
 即掩码运算、FFT 相关、rayon 并行在 ARM Android 上均可用，识别结果与桌面一致。
 产物 34MB，含 arm64-v8a 与 x86_64 两份 `libembermap_lib.so`。
 
-两个落地时踩到的点：
+随后接入 MediaProjection 取帧与 SYSTEM_ALERT_WINDOW 悬浮窗，在模拟器上
+完成端到端验证：投屏授权 → 取帧 → 识别 → 悬浮窗叠加。识别结果与桌面一致
+（同一张截图桌面 0.837 / Android 0.838），锁定后持续跟踪每帧约 3.5 秒
+（模拟器数字，真机应更快）。悬浮窗经 `dumpsys window` 确认属性正确：
+
+```
+ty=APPLICATION_OVERLAY fmt=TRANSLUCENT alpha=0.8
+fl=NOT_FOCUSABLE NOT_TOUCHABLE LAYOUT_NO_LIMITS SECURE
+```
+
+落地时踩到的四个点：
 
 - **资源读取**：Tauri 的 `resource_dir()` 在 Android 上返回 `asset://` URI，
   `std::fs` 读不了。解法是 `MainActivity.kt` 启动时把 `assets/bundle` 解压到
@@ -53,6 +63,14 @@ APK 可构建并在模拟器（android-34 / arm64-v8a）实测通过：
   Rust 侧从 `app_data_dir()/bundle` 读取。
 - **构建工具**：用 `cargo tauri android init` 而非 `npx`，
   否则生成的 Gradle 任务会硬编码调用 `npm`，而 `src-tauri/` 下没有 package.json。
+- **前台服务的启动顺序**：Android 14+ 要求先 `startForeground()` 再
+  `getMediaProjection()`，否则抛 SecurityException。插件不能在主线程
+  `sleep` 等待服务启动——`onStartCommand` 同在主线程，等待会把服务自己饿死。
+  正解是把投屏创建整个放进服务内部顺序执行，插件用 Handler 非阻塞轮询就绪。
+- **FLAG_SECURE 与自我遮挡**：悬浮窗加 `FLAG_SECURE` 后确实不进投屏画面，
+  但它覆盖的区域在抓到的帧里变成黑块，而它盖住的恰是地图——实测表现为识别
+  结果在「认出」与「无面板」之间来回震荡。解法是取帧瞬间把悬浮窗设为
+  `INVISIBLE`、等一帧新画面再抓、抓完恢复（代价是极短暂的闪烁）。
 
 构建命令：
 
@@ -125,7 +143,12 @@ Settings.ACTION_MANAGE_OVERLAY_PERMISSION   // 引导用户授予「显示在其
 - 轮询间隔放宽到 1.5-2 秒，锁定后可拉到 3 秒（跟踪只需修正位置与缩放）；
 - rayon 线程数限制为大核数量，避免和游戏抢 CPU 导致掉帧。
 
-预计锁定前每帧 2-3 秒、锁定后 1-1.5 秒，对「打开地图看一眼」的使用节奏够用。
+模拟器实测：首次锁定约 5 秒，跟踪每帧约 3.5 秒。真机预计更快，待验证。
+
+一个反直觉的实测结论：**取帧分辨率不能为了省时间而调低**。把 Kotlin 侧的
+取帧上限从 2000 降到 1200 时，多次重采样叠加 JPEG 压缩会把识别分数从 0.84
+压到 0.73，直接掉出置信门槛；而「高保真取帧 + 低分辨率分析」
+（取帧 2000、`target_long_edge` 1000）既保住 0.84 又省时间。
 
 #### 合规提醒
 
