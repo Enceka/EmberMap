@@ -1,0 +1,67 @@
+name: 构建 Android APK
+description: 备好 JDK/SDK/NDK 与 Rust 目标，跑 cargo tauri android build 出 APK。
+  ci.yml 与 release.yml 共用，免得环境准备两处各存一份、改一处漏一处。
+
+inputs:
+  targets:
+    description: 传给 cargo tauri android build 的架构，空格分隔（aarch64 / x86_64 / armv7 / i686）
+    required: false
+    default: aarch64 x86_64
+
+outputs:
+  apk:
+    description: 未签名 APK 的路径
+    value: ${{ steps.build.outputs.apk }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: "17" # AGP 8.11 要求 JDK 17
+
+    - uses: android-actions/setup-android@v3
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android,x86_64-linux-android
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: app/src-tauri
+        key: android-${{ inputs.targets }}
+
+    # rust-cache 会缓存 ~/.cargo/bin，首次约 3 分钟，之后命中缓存
+    - name: 安装 tauri-cli
+      shell: bash
+      run: cargo install tauri-cli --locked --version "^2"
+
+    - name: 构建 APK
+      id: build
+      shell: bash
+      working-directory: app
+      env:
+        TARGETS: ${{ inputs.targets }}
+      run: |
+        set -euo pipefail
+        # 用 runner 自带的 NDK，不额外下载；镜像里变量名变过，留个兜底
+        ndk="${ANDROID_NDK_LATEST_HOME:-}"
+        if [ -z "$ndk" ]; then
+          ndk=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -1)
+        fi
+        test -n "$ndk" || { echo "runner 上找不到 NDK"; exit 1; }
+        echo "NDK：$ndk"
+        export NDK_HOME="$ndk"
+
+        args=()
+        for t in $TARGETS; do args+=(--target "$t"); done
+        cargo tauri android build "${args[@]}" --apk
+
+        # 用 -print -quit 而不是 | head -1：pipefail 下 head 提前退出会让
+        # find 收到 SIGPIPE，整步随机失败
+        apk=$(find src-tauri/gen/android/app/build/outputs/apk \
+                -name '*-release-unsigned.apk' -print -quit)
+        test -n "$apk" || { echo "没找到未签名 APK"; exit 1; }
+        echo "apk=app/$apk" >> "$GITHUB_OUTPUT"
+        ls -lh "$apk"

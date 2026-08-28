@@ -55,3 +55,15 @@ jobs:
         run: cargo test --release --manifest-path app/src-tauri/Cargo.toml
       - name: 构建检查
         run: cargo build --release --manifest-path app/src-tauri/Cargo.toml
+
+  # 只验「还能不能编出来」，不签名、不上传：APK 由 release 工作流出。
+  # 只编 arm64-v8a——x86_64 那份只有模拟器用得上，PR 上不值当多花一倍时间。
+  # 环境准备与 release 工作流共用 .github/actions/android-apk，避免两处漂移。
+  android:
+    name: Android 编译检查
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-apk
+        with:
+          targets: aarch64
