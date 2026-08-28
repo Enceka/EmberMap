@@ -40,6 +40,13 @@ class CaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 通知栏「停止投屏」：用户随时能收手，不必回到应用里找开关
+        if (intent?.action == ACTION_STOP) {
+            Log.i("EmberMap", "用户从通知栏停止投屏")
+            teardown()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         startForegroundNotification()
 
         val resultCode = intent?.getIntExtra(EXTRA_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
@@ -102,10 +109,21 @@ class CaptureService : Service() {
                 NotificationChannel(channelId, "地图识别", NotificationManager.IMPORTANCE_LOW)
             )
         }
+        val stopIntent = Intent(this, CaptureService::class.java).setAction(ACTION_STOP)
+        val stopPending = android.app.PendingIntent.getService(
+            this, 0, stopIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val notification: Notification = Notification.Builder(this, channelId)
             .setContentTitle("EmberMap 正在识别地图")
-            .setContentText("仅读取屏幕画面用于识别，可随时停止")
+            .setContentText("仅读取屏幕画面用于识别")
             .setSmallIcon(android.R.drawable.ic_menu_mapmode)
+            .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    null as android.graphics.drawable.Icon?, "停止投屏", stopPending
+                ).build()
+            )
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -172,6 +190,7 @@ class CaptureService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1001
+        const val ACTION_STOP = "net.yeah.enceka.embermap.STOP_CAPTURE"
         const val EXTRA_CODE = "resultCode"
         const val EXTRA_DATA = "resultData"
 

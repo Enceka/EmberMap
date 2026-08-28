@@ -23,6 +23,8 @@ let overlayVisible = false;
 let lowConfMiss = 0;       // 面板在但低置信的连续帧数
 let lastPushed = null;     // 上次推给覆盖层的指纹，避免重复推送
 let androidOverlay = false; // Android 悬浮窗由 Kotlin 绘制，参数形状与桌面不同
+let capturing = false;      // Android 投屏是否在进行（授权可被用户随时撤销）
+let captureStopped = null;  // Android：投屏中止时的收尾（由平台分支注入）
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const floorCn = (f) => ({ "1f": "一楼", "2f": "二楼", b1: "地下室" }[f] || f);
@@ -196,7 +198,13 @@ async function analyzeOnce(auto) {
     await pushOverlay(false);
     return "hit";
   } catch (e) {
-    setStatus(String(e), "warn");
+    const msg = String(e);
+    // 投屏被用户或系统停掉：立刻收尾，别让循环空转刷错误
+    if (captureStopped && /尚未授权投屏|投屏/.test(msg)) {
+      await captureStopped("投屏已停止，点「授权投屏」重新开始");
+    } else {
+      setStatus(msg, "warn");
+    }
     return "miss";
   } finally {
     busy = false;
@@ -292,17 +300,35 @@ listen("hotkey", async (ev) => {
   }
 
   if (caps.needs_capture_permission) {
-    // Android：先授权投屏才能取帧；授权在停止投屏后失效，故每次启动都要点
+    // Android：先授权投屏才能取帧；按钮兼作开关，随时可停
     const grant = $("btn-grant");
     grant.hidden = false;
     $("chk-watch").checked = false;
     setStatus("请先点「授权投屏」，然后切到游戏打开地图", "warn");
+
+    captureStopped = async (reason) => {
+      watching = false;
+      await hideOverlay();
+      $("chk-watch").checked = false;
+      grant.textContent = "授权投屏";
+      grant.disabled = false;
+      capturing = false;
+      setStatus(reason, "warn");
+    };
+
     grant.addEventListener("click", async () => {
       grant.disabled = true;
+      if (capturing) {
+        try { await invoke("stop_capture"); } catch { /* 已停就算了 */ }
+        await captureStopped("投屏已停止");
+        return;
+      }
       setStatus("等待系统授权…");
       try {
         await invoke("request_capture");
-        grant.textContent = "投屏已授权";
+        capturing = true;
+        grant.textContent = "停止投屏";
+        grant.disabled = false;
         $("chk-watch").checked = true;
         watching = true;
         setStatus("自动监测中——切到游戏打开地图即自动识别");
@@ -311,6 +337,16 @@ listen("hotkey", async (ev) => {
         grant.disabled = false;
         setStatus(String(e), "warn");
       }
+    });
+
+    // 用户也可能从通知栏或系统的投屏提示里停掉，回到应用时要同步过来
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState !== "visible" || !capturing) return;
+      try {
+        if (!(await invoke("capture_active"))) {
+          await captureStopped("投屏已被停止，需重新授权");
+        }
+      } catch { /* 忽略 */ }
     });
     return;
   }
