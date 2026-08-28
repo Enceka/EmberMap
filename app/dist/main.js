@@ -46,10 +46,16 @@ function loadImg(b64) {
 async function render(p) {
   const [shot, draw] = await Promise.all([loadImg(p.shot_png), loadImg(p.draw_png)]);
   const alpha = $("rng-alpha").value / 100;
-  canvas.width = shot.width;
-  canvas.height = shot.height;
+  // tf 与门位用的是「显示区域局部的屏幕物理像素」，而截图可能被取帧端缩过
+  // （Android 按长边 2000 封顶）。按 view 宽 / 截图宽还原，预览才与悬浮窗一致——
+  // 这也让预览成为排查叠加错位的可信参照。
+  const k = shot.width > 0 ? p.view[2] / shot.width : 1;
+  renderGeom(p, shot.width);
+  canvas.width = Math.max(1, Math.round(shot.width * k));
+  canvas.height = Math.max(1, Math.round(shot.height * k));
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(shot, 0, 0);
+  ctx.drawImage(shot, 0, 0, canvas.width, canvas.height);
   ctx.save();
   ctx.setTransform(p.tf.scale, 0, 0, p.tf.scale, p.tf.tx, p.tf.ty);
   ctx.globalCompositeOperation = "screen";
@@ -85,6 +91,16 @@ async function drawFrame(b64) {
   ctx.fillStyle = "#e3b341";
   ctx.font = "16px sans-serif";
   ctx.fillText("这是识别器实际抓到的画面", 8, 19);
+}
+
+/// 叠加层几何对账行：view 是悬浮窗矩形（屏幕物理 px），tf 是手绘图→窗口局部的相似变换，
+/// k 是取帧缩放还原系数。三者同一坐标系时叠加才可能对准，错位排查先看这行。
+function renderGeom(p, shotW) {
+  const t = p.tf;
+  const k = shotW > 0 ? p.view[2] / shotW : 1;
+  $("geom").textContent =
+    `view=[${p.view.join(",")}] tf=${t.scale.toFixed(4)}@(${t.tx.toFixed(0)},${t.ty.toFixed(0)}) ` +
+    `shot=${shotW} k=${k.toFixed(3)}`;
 }
 
 function renderCandidates(list) {
@@ -168,6 +184,7 @@ async function analyzeOnce(auto) {
       // 无法判断它到底在不在工作（真机排障时踩过这个坑）
       setStatus(`未识别到地图（抓到 ${p.frame_w}×${p.frame_h}）：${p.reason}`, "warn");
       renderCandidates([]);
+      $("geom").textContent = "";
       if (p.frame_png) await drawFrame(p.frame_png);
       return "miss";
     }

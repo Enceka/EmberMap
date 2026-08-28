@@ -36,3 +36,4 @@ main {
 #view { width: 100%; background: #0c0f14; border-radius: 8px; display: block; }
 #candidates { list-style: none; padding: 8px 4px; font-size: 13px; color: #9aa6b2; }
 #candidates li.best { color: #7ee787; }
+#geom { padding: 0 4px 10px; font: 11px ui-monospace, Menlo, monospace; color: #6e7681; word-break: break-all; }

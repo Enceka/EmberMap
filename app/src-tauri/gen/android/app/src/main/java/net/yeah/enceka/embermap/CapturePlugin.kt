@@ -338,6 +338,11 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun showOverlay(invoke: Invoke) {
         val args = invoke.parseArgs(OverlayArgs::class.java)
+        Log.i(
+            "EmberMap",
+            "悬浮窗 窗口=${args.w}x${args.h}@${args.x},${args.y} " +
+                "手绘尺度=${"%.4f".format(args.scale)} 平移=${args.tx.toInt()},${args.ty.toInt()}"
+        )
         if (!Settings.canDrawOverlays(activity)) {
             invoke.reject("尚未授予悬浮窗权限")
             return

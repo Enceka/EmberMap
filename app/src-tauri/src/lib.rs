@@ -226,44 +226,20 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 .iter()
                 .find(|e| e.variant == best.variant && e.floor == best.floor)
                 .unwrap();
-            // 显示区域 = 整层参考图投影回画面，而非仅已探索区域——
-            // 工具的价值就在于显示还没探索的部分。裁到画面边界内。
-            let [px0, py0, pw0, ph0] = panel;
-            let b0 = best.transform; // q(面板局部 px) → 参考 px：ref = q·s + t
-            let proj = |rx: f64, ry: f64| {
-                ((rx - b0.tx) / b0.scale + px0 as f64, (ry - b0.ty) / b0.scale + py0 as f64)
-            };
-            let (vx0, vy0) = proj(0.0, 0.0);
-            let (vx1, vy1) = proj(entry.mask.w as f64, entry.mask.h as f64);
-            let x = vx0.floor().max(0.0) as usize;
-            let y = vy0.floor().max(0.0) as usize;
-            let pw = (vx1.ceil().min(w as f64) as usize).saturating_sub(x).max(1);
-            let ph = (vy1.ceil().min(h as f64) as usize).saturating_sub(y).max(1);
+            // 显示区域 / 变换 / 门位由 em-core 统一推导，与离线校验工具同源
+            let ov = em_core::overlay_geometry(panel, best.transform, entry, w, h);
+            let [x, y, pw, ph] = ov.view;
             let mut crop = vec![0u8; pw * ph * 3];
             for row in 0..ph {
                 let src = ((y + row) * w + x) * 3;
                 crop[row * pw * 3..(row + 1) * pw * 3]
                     .copy_from_slice(&rgb[src..src + pw * 3]);
             }
-            // 面板局部坐标 → 显示区域局部坐标的平移量
-            let (sx, sy) = (px0 as f64 - x as f64, py0 as f64 - y as f64);
-            let _ = (pw0, ph0);
-            // draw→面板 变换：q = d·(a/b) + (ta−tb)/b
-            let a = entry.tf_draw_to_game;
-            let b = best.transform;
-            let tf = em_core::Transform {
-                scale: a.scale / b.scale,
-                tx: (a.tx - b.tx) / b.scale + sx,
-                ty: (a.ty - b.ty) / b.scale + sy,
-            };
-            let doors = entry
+            let tf = ov.tf;
+            let doors: Vec<DoorOut> = ov
                 .doors
                 .iter()
-                .map(|d| DoorOut {
-                    label: d.label.clone(),
-                    x: (d.x - b.tx) / b.scale + sx,
-                    y: (d.y - b.ty) / b.scale + sy,
-                })
+                .map(|d| DoorOut { label: d.label.clone(), x: d.x, y: d.y })
                 .collect();
             let draw_png = B64.encode(
                 std::fs::read(&entry.draw_path).map_err(|e| e.to_string())?,
@@ -477,11 +453,26 @@ async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
         let im = image::open(&frame.path).map_err(|e| e.to_string())?.to_rgb8();
         let (w, h) = (im.width() as usize, im.height() as usize);
         let mut payload = run_analysis(im.into_raw(), w, h, &app.state::<AppState>())?;
-        if let Payload::Ok { view, .. } = &mut payload {
+        // run_analysis 的输出全在「截图像素」坐标系里，而悬浮窗画在屏幕物理像素上。
+        // 只换算 view 是不够的：tf 与门位也在同一坐标系，漏掉它们等于
+        // 窗口摆对了、里面的图却按截图尺度画——实测长边 2412 的屏幕被缩到 2000，
+        // 叠加层就整体小 17% 并朝窗口左上角偏，表现为「覆盖和缩放都不对」。
+        if let Payload::Ok { view, tf, doors, .. } = &mut payload {
             let inv = 1.0 / frame.scale.max(1e-6);
             for v in view.iter_mut() {
                 *v = (*v as f64 * inv).round() as i32;
             }
+            tf.scale *= inv;
+            tf.tx *= inv;
+            tf.ty *= inv;
+            for d in doors.iter_mut() {
+                d.x *= inv;
+                d.y *= inv;
+            }
+            eprintln!(
+                "[em] 帧→屏幕 ×{inv:.4} 显示区域={view:?} 手绘尺度={:.4} 平移=({:.1},{:.1})",
+                tf.scale, tf.tx, tf.ty
+            );
         }
         Ok(payload)
     })

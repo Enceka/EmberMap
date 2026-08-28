@@ -38,6 +38,68 @@ pub enum Analysis {
     },
 }
 
+/// 叠加几何：整层显示区域，以及手绘图与门位到该区域局部坐标的映射。
+///
+/// 全部处于「帧像素」坐标系——即传给 analyze_with 的那张图的像素。
+/// 若上层对帧做过缩放（Android 取帧按长边封顶），view / tf / doors
+/// 必须乘同一个系数一起换算，只换算其中之一就会「窗口摆对了、图画歪了」。
+#[derive(Serialize, Clone)]
+pub struct Overlay {
+    /// 显示区域 [x, y, w, h]，已裁到帧内
+    pub view: [usize; 4],
+    /// 手绘图 px → 显示区域局部 px
+    pub tf: Transform,
+    /// 门位，显示区域局部 px
+    pub doors: Vec<bundle::Door>,
+}
+
+/// 由匹配结果推出叠加几何。
+/// q_to_ref 是 Candidate::transform（面板局部 px → 参考 px：ref = q·s + t）。
+///
+/// 显示区域取「整层参考图投影回画面」而非仅已探索面板——工具的价值就在于
+/// 显示还没探索的部分；越界部分裁到画面内，叠加层照常按局部坐标绘制。
+pub fn overlay_geometry(
+    panel: [usize; 4],
+    q_to_ref: Transform,
+    entry: &bundle::Entry,
+    frame_w: usize,
+    frame_h: usize,
+) -> Overlay {
+    let [px0, py0, _, _] = panel;
+    let b = q_to_ref;
+    let proj = |rx: f64, ry: f64| {
+        ((rx - b.tx) / b.scale + px0 as f64, (ry - b.ty) / b.scale + py0 as f64)
+    };
+    let (vx0, vy0) = proj(0.0, 0.0);
+    let (vx1, vy1) = proj(entry.mask.w as f64, entry.mask.h as f64);
+    let x = vx0.floor().max(0.0) as usize;
+    let y = vy0.floor().max(0.0) as usize;
+    let w = (vx1.ceil().clamp(0.0, frame_w as f64) as usize).saturating_sub(x).max(1);
+    let h = (vy1.ceil().clamp(0.0, frame_h as f64) as usize).saturating_sub(y).max(1);
+    // 面板局部 → 显示区域局部的平移量（显示区域被裁到画面内，故未必等于 0）
+    let (sx, sy) = (px0 as f64 - x as f64, py0 as f64 - y as f64);
+    // draw→面板：ref = d·a.scale + a.t 且 ref = q·b.scale + b.t
+    //         ⇒ q = d·(a.scale/b.scale) + (a.t − b.t)/b.scale
+    let a = entry.tf_draw_to_game;
+    Overlay {
+        view: [x, y, w, h],
+        tf: Transform {
+            scale: a.scale / b.scale,
+            tx: (a.tx - b.tx) / b.scale + sx,
+            ty: (a.ty - b.ty) / b.scale + sy,
+        },
+        doors: entry
+            .doors
+            .iter()
+            .map(|d| bundle::Door {
+                label: d.label.clone(),
+                x: (d.x - b.tx) / b.scale + sx,
+                y: (d.y - b.ty) / b.scale + sy,
+            })
+            .collect(),
+    }
+}
+
 /// 分析参数：首次识别（acquire）求准，锁定后（track）求快。
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -221,4 +283,64 @@ pub fn analyze_with(
     let confident = candidates.first().is_some_and(|c| c.score >= CONFIDENCE_GATE);
     let panel = [fx, fy, fw, fh];
     Analysis::Matched { panel, confident, candidates }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(mask_w: usize, mask_h: usize) -> bundle::Entry {
+        bundle::Entry {
+            variant: "t".into(),
+            name: "测试".into(),
+            floor: "1f".into(),
+            mask: img::Gray::new(mask_w, mask_h),
+            draw_path: std::path::PathBuf::new(),
+            // 手绘 → 参考：ref = d·2 + (10,20)
+            tf_draw_to_game: bundle::TfJson { scale: 2.0, tx: 10.0, ty: 20.0 },
+            doors: vec![bundle::Door { label: "门".into(), x: 110.0, y: 60.0 }],
+        }
+    }
+
+    /// 叠加几何必须与匹配变换自洽：同一个点无论走「手绘→显示区域」还是
+    /// 「手绘→参考→画面」，落点必须一致。真机叠加错位就是从这里跑偏的。
+    #[test]
+    fn 叠加几何与匹配变换自洽() {
+        let e = entry(200, 100);
+        // 面板局部 → 参考：ref = q·0.5 + (30,40)
+        let b = Transform { scale: 0.5, tx: 30.0, ty: 40.0 };
+        let ov = overlay_geometry([500, 300, 50, 40], b, &e, 1000, 800);
+        // 整层投影：参考 (0,0) 与 (200,100) 的画面落点
+        assert_eq!(ov.view, [440, 220, 400, 200]);
+        assert!((ov.tf.scale - 4.0).abs() < 1e-9);
+
+        // 手绘原点：经显示区域 → 画面
+        let via_view = (ov.tf.tx + ov.view[0] as f64, ov.tf.ty + ov.view[1] as f64);
+        // 手绘原点：经参考 → 画面
+        let a = e.tf_draw_to_game;
+        let via_ref = ((a.tx - b.tx) / b.scale + 500.0, (a.ty - b.ty) / b.scale + 300.0);
+        assert!((via_view.0 - via_ref.0).abs() < 1e-9);
+        assert!((via_view.1 - via_ref.1).abs() < 1e-9);
+
+        // 门位同理：参考 (110,60) → 画面 (660,340) → 显示区域局部 (220,120)
+        assert!((ov.doors[0].x - 220.0).abs() < 1e-9);
+        assert!((ov.doors[0].y - 120.0).abs() < 1e-9);
+    }
+
+    /// 整层超出画面时显示区域被裁，但 tf 必须跟着补偿，叠加内容不能因此位移。
+    #[test]
+    fn 显示区域裁到画面内后变换仍对齐() {
+        let e = entry(200, 100);
+        let b = Transform { scale: 0.5, tx: 30.0, ty: 40.0 };
+        let full = overlay_geometry([500, 300, 50, 40], b, &e, 1000, 800);
+        // 画面缩到 600×360：右下被裁，左上顶点不变
+        let cut = overlay_geometry([500, 300, 50, 40], b, &e, 600, 360);
+        assert_eq!(cut.view[0], full.view[0]);
+        assert_eq!(cut.view[1], full.view[1]);
+        assert_eq!([cut.view[2], cut.view[3]], [600 - 440, 360 - 220]);
+        // 原点未变 ⇒ 局部坐标下的变换与门位应当逐字相同
+        assert!((cut.tf.tx - full.tf.tx).abs() < 1e-9);
+        assert!((cut.tf.ty - full.tf.ty).abs() < 1e-9);
+        assert!((cut.doors[0].x - full.doors[0].x).abs() < 1e-9);
+    }
 }
