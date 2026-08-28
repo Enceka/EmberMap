@@ -25,6 +25,40 @@ struct AppState {
     /// 用户手动锁定的变体/楼层。锁定后只跟这些参考比对，
     /// 主界面之类的画面就不可能再被认成别的地图，顺带快十几倍。
     pin: Mutex<PinState>,
+    /// 上一次被采信的面板位置，用来拦「叠加层突然跳到别处」
+    geom: Mutex<GeomGuard>,
+}
+
+/// 叠加层几何连续性守卫。
+///
+/// 地图关闭（或场景切换）的那一两帧，面板检测可能落到画面里完全另一处，
+/// 分数却还勉强过得了门槛——那一帧会把覆盖窗整个甩走，用户看到的就是
+/// 「关掉地图后叠加层在屏幕上跳几下」。游戏里的地图面板不会瞬移：
+/// 平移、缩放都是连续的，前后两帧必然大幅交叠。
+#[derive(Default)]
+struct GeomGuard {
+    /// 上一次采信的面板（帧像素）
+    panel: Option<[usize; 4]>,
+    /// 连续被拦下的帧数，到 GEOM_MAX_REJECT 就承认地图真的挪了这么远
+    rejects: u32,
+}
+
+/// 新面板与上次采信的面板，交叠须占较小者的这个百分比
+const GEOM_MIN_OVERLAP: usize = 20;
+/// 连续拦这么多帧就放行，免得地图真挪远了从此再也跟不上
+const GEOM_MAX_REJECT: u32 = 2;
+
+/// 两个矩形的交叠面积占较小者的百分比
+fn overlap_pct(a: [usize; 4], b: [usize; 4]) -> usize {
+    let x0 = a[0].max(b[0]);
+    let y0 = a[1].max(b[1]);
+    let x1 = (a[0] + a[2]).min(b[0] + b[2]);
+    let y1 = (a[1] + a[3]).min(b[1] + b[3]);
+    if x1 <= x0 || y1 <= y0 {
+        return 0;
+    }
+    let smaller = (a[2] * a[3]).min(b[2] * b[3]).max(1);
+    (x1 - x0) * (y1 - y0) * 100 / smaller
 }
 
 /// 手动锁定状态。两项都为 None = 全自动。
@@ -214,6 +248,7 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
     match analysis {
         em_core::Analysis::NoPanel { reason } => {
             let forgot = state.tracker.lock().unwrap().on_no_panel();
+            *state.geom.lock().unwrap() = GeomGuard::default();
             eprintln!("[em] {dt:?} 无面板{}：{reason}", if forgot { "(证据已清空)" } else { "(暂停)" });
             Ok(Payload::NoPanel {
                 reason,
@@ -252,9 +287,41 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 if dec.variant.is_some() {
                     tk.prior_scale_full = Some(candidates[i].scale_full);
                 }
+                if dec.stale {
+                    // 粘滞维持显示，但本帧几何不可信：保持上一帧的叠加不动。
+                    // 用它去摆覆盖窗，就是「关掉地图后叠加层跳几下」的第一个来源。
+                    eprintln!("[em] {dt:?} 分数掉出门槛，保持上一帧叠加（分差 {:.3}）", dec.advantage);
+                    return Ok(Payload::Skip { reason: "本帧几何不可信，保持上一帧叠加".into() });
+                }
                 (i, dec.variant.is_some(), dec.phase.to_string(), dec.evidence, dec.advantage)
             };
             let best = &candidates[best_i];
+            // 几何连续性：面板不会瞬移。与上次采信的面板交叠太少就先不动叠加层，
+            // 连续两帧都对不上才承认地图真挪了这么远。地图关闭那一两帧的误检
+            // 往往落在画面别处，正是这道闸要拦的。
+            {
+                let mut gg = state.geom.lock().unwrap();
+                if !confident {
+                    *gg = GeomGuard::default();
+                } else if let Some(prev) = gg.panel {
+                    let ov = overlap_pct(prev, panel);
+                    if ov < GEOM_MIN_OVERLAP && gg.rejects < GEOM_MAX_REJECT {
+                        gg.rejects += 1;
+                        eprintln!(
+                            "[em] {dt:?} 面板从 {prev:?} 跳到 {panel:?}（交叠 {ov}%），\
+                             保持上一帧叠加（第 {} 次）",
+                            gg.rejects
+                        );
+                        return Ok(Payload::Skip {
+                            reason: format!("面板位置突变（交叠 {ov}%），保持上一帧叠加"),
+                        });
+                    }
+                    gg.rejects = 0;
+                    gg.panel = Some(panel);
+                } else {
+                    gg.panel = Some(panel);
+                }
+            }
             // 一帧对全库毫无判别力时（13 个变体挤在 0.806-0.810 里，实测就是这样），
             // 报出「当前最像 XX 0.81」在用户看来就是认错了地图。这种帧本来也锁不了
             // （tracker 要求 MIN_FRAME_ADVANTAGE），如实说没认出来更好。
@@ -873,6 +940,7 @@ pub fn run() {
             last_frame: Mutex::new((0, 0)),
             bundle_dir: Mutex::new(PathBuf::new()),
             pin: Mutex::new(PinState::default()),
+            geom: Mutex::new(GeomGuard::default()),
         })
         .setup(|app| {
             let dir = resolve_bundle_dir(app.handle());
@@ -947,4 +1015,27 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("EmberMap 启动失败");
+}
+
+#[cfg(test)]
+mod geom_tests {
+    use super::overlap_pct;
+
+    #[test]
+    fn 面板平移缩放仍算连续() {
+        let a = [100, 100, 200, 300];
+        // 小幅平移：交叠远超门槛
+        assert!(overlap_pct(a, [120, 110, 200, 300]) > 70);
+        // 缩放：小的整个落在大的里面，按较小者算就是满的
+        assert_eq!(overlap_pct(a, [150, 150, 80, 100]), 100);
+        assert_eq!(overlap_pct([150, 150, 80, 100], a), 100);
+    }
+
+    #[test]
+    fn 面板瞬移到别处交叠为零() {
+        let a = [100, 100, 200, 300];
+        assert_eq!(overlap_pct(a, [900, 800, 200, 300]), 0);
+        // 只擦到一角也远低于 20% 门槛
+        assert!(overlap_pct(a, [290, 390, 200, 300]) < 20);
+    }
 }

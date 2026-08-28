@@ -40,6 +40,10 @@ pub struct Decision {
     pub evidence: f32,
     /// 本帧最佳变体与次佳变体的分差
     pub advantage: f32,
+    /// 本帧的几何不可信：变体仍按粘滞维持显示，但分数已掉出门槛，
+    /// 这一帧算出来的位置/尺度不能用。调用方应保持上一帧的叠加不动——
+    /// 拿它去摆覆盖窗，用户看到的就是叠加层在屏幕上跳一下。
+    pub stale: bool,
 }
 
 #[cfg(test)]
@@ -148,6 +152,26 @@ mod tests {
         assert!(t.update(&f, GATE).variant.is_none(), "连续掉分应解锁");
         assert!(t.prior_scale_full.is_none(), "解锁须清尺度先验");
     }
+
+    #[test]
+    fn 缓冲期的几何必须标为不可信() {
+        // 关掉地图后叠加层「跳几下」的来源：缓冲帧仍报出变体，
+        // 调用方若拿它的位置去摆覆盖窗就会甩走。这一帧必须标 stale。
+        let mut t = Tracker::default();
+        assert!(!t.update(&frame(&[("A", 0.84), ("B", 0.77)]), GATE).stale);
+        let d = t.update(&frame(&[("A", 0.5), ("B", 0.4)]), GATE);
+        assert_eq!(d.variant.as_deref(), Some("A"), "缓冲期仍显示");
+        assert!(d.stale, "但几何不可信");
+    }
+
+    #[test]
+    fn 正常跟踪的几何是可信的() {
+        let mut t = Tracker::default();
+        t.update(&frame(&[("A", 0.84), ("B", 0.77)]), GATE);
+        let d = t.update(&frame(&[("A", 0.85), ("B", 0.78)]), GATE);
+        assert_eq!(d.phase, "tracking");
+        assert!(!d.stale);
+    }
 }
 
 impl Tracker {
@@ -206,9 +230,9 @@ impl Tracker {
                     self.locked = Some(v.clone());
                     self.challenger = None;
                     self.lost = 0;
-                    Decision { variant: Some(v), phase: "locked", evidence: ev, advantage }
+                    Decision { variant: Some(v), phase: "locked", evidence: ev, advantage, stale: false }
                 } else {
-                    Decision { variant: None, phase: "acquiring", evidence: ev, advantage }
+                    Decision { variant: None, phase: "acquiring", evidence: ev, advantage, stale: false }
                 }
             }
             Some(lock) => {
@@ -221,10 +245,15 @@ impl Tracker {
                     if self.lost >= LOST_FRAMES {
                         // 解锁并清先验：可能换局，也可能用户缩放了地图导致尺度失效
                         self.reset();
-                        return Decision { variant: None, phase: "acquiring", evidence: 0.0, advantage };
+                        return Decision {
+                            variant: None, phase: "acquiring", evidence: 0.0, advantage, stale: false,
+                        };
                     }
-                    // 缓冲期内维持显示
-                    return Decision { variant: Some(lock), phase: "tracking", evidence: 0.0, advantage };
+                    // 缓冲期内维持显示，但本帧几何不可信：分数掉出门槛意味着
+                    // 匹配已经对不上，拿它的位置去摆覆盖窗就会看到叠加层跳一下
+                    return Decision {
+                        variant: Some(lock), phase: "tracking", evidence: 0.0, advantage, stale: true,
+                    };
                 }
                 self.lost = 0;
                 if leader != lock && leader_score - lock_score >= SWITCH_MARGIN {
@@ -235,13 +264,15 @@ impl Tracker {
                     if n >= SWITCH_FRAMES {
                         self.locked = Some(leader.clone());
                         self.challenger = None;
-                        return Decision { variant: Some(leader), phase: "locked", evidence: 0.0, advantage };
+                        return Decision {
+                            variant: Some(leader), phase: "locked", evidence: 0.0, advantage, stale: false,
+                        };
                     }
                     self.challenger = Some((leader, n));
                 } else {
                     self.challenger = None;
                 }
-                Decision { variant: Some(lock), phase: "tracking", evidence: 0.0, advantage }
+                Decision { variant: Some(lock), phase: "tracking", evidence: 0.0, advantage, stale: false }
             }
         }
     }
