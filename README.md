@@ -5,13 +5,12 @@
 
 ## 目录
 
-- `draw-em/` — 手绘示意图素材（作者：小红薯@撒娇怪），13 变体 × 3 层，含 `doors.json` 门位标注
-- `game-em/` — 游戏内实拍拼图素材（作者：王清心，免费发布禁止出售），与游戏内渲染同风格
+- `draw-em/` — 手绘示意图，13 变体 × 3 层，含 `doors.json` 门位标注；用作**展示层**
+- `game-em/` — 游戏内实拍拼图，与游戏内渲染同风格；用作**匹配层**（几何忠实，不可替换）
 - `data/` — 项目自有元数据：变体命名与配对、楼层切分人工覆盖、门位（game 坐标系）
 - `proto/` — Python 原型（掩码提取、楼层切分、匹配、评测、实机监测），算法准绳
 - `em-core/` — 纯 Rust 匹配核心（无 OpenCV），语义与 proto/emlib.py 对齐，双实现校验
 - `app/` — Tauri 2 应用（`app/bundle/` 为数据包，`proto/build_bundle.py` 生成）
-- `test/` — 真实游戏截图测试集
 - `build/` — Python 生成物（参考库、质检图、评测输出），不入库
 
 ## 应用
@@ -40,10 +39,8 @@ cd app && npx @tauri-apps/cli build            # 打发行包（dmg/nsis/deb/App
 一致性校验（Rust vs Python，两张真实截图）：
 
 ```bash
-cd em-core && cargo run --release --example match_file -- ../app/bundle ../test/*.png
+cd em-core && cargo run --release --example match_file -- ../app/bundle 你的截图.png
 ```
-
-> 素材为他人作品，仅限本地开发使用；公开分发前必须取得作者授权或改用自绘底图。
 
 ## 原型用法
 
@@ -110,5 +107,15 @@ CI 里的自动回归改用 `em-core/tests/synth_regression.rs`：从参考库�
 | 中期（350px） | 100% | 100% | 2.1px |
 | 完整楼层 | 100% | 100% | 2.6px |
 
-单次匹配约 2s（未优化 Python）。**待办**：真实游戏截图测试集（不同机型/分辨率/探索程度），
-用于验证渲染风格差异并校准 `--debug` 掩码颜色阈值。
+单次匹配约 2s（未优化 Python 原型；Rust 版 acquire 约 1.3-1.5s、跟踪约 0.8-0.9s）。
+
+## 素材来源
+
+地图素材来自玩家社区，在此致谢：
+
+- 手绘示意图（`draw-em/`）：@一个嗑cp的号 绘制；图中致谢小红薯 @撒娇怪（云吃吃版）提供局内小地图
+- 游戏内实拍拼图（`game-em/`）：@王清心TsingXsign
+- 《第五人格》为网易游戏作品，地图设计版权归网易所有
+
+本项目代码采用 GPL-3.0-or-later（见 `LICENSE`）；上述素材及由其生成的
+`app/bundle/` 不在该授权范围内，版权归各自作者所有，本项目仅作学习交流之用。
