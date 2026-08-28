@@ -197,7 +197,10 @@ jobs:
 
           if [ -n "${KEYSTORE_B64:-}" ]; then
             echo "$KEYSTORE_B64" | base64 -d > /tmp/em.jks
-            storepass="$KEYSTORE_PASSWORD"; keypass="$KEY_PASSWORD"; alias="$KEY_ALIAS"
+            storepass="$KEYSTORE_PASSWORD"; alias="$KEY_ALIAS"
+            # PKCS12（keytool 的默认格式）不支持 store 与 key 口令不同，
+            # 故 ANDROID_KEY_PASSWORD 可以不配，缺省即 store 口令
+            keypass="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
             echo "用仓库 secret 中的正式签名密钥"
           else
             storepass=embermap; keypass=embermap; alias=embermap
