@@ -2,6 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <!-- viewport-fit=cover 是让 env(safe-area-inset-*) 生效的前提；
+       Android 端 MainActivity 走 enableEdgeToEdge()，内容会延伸到状态栏/手势条下面 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>EmberMap</title>
   <link rel="stylesheet" href="style.css" />
 </head>
