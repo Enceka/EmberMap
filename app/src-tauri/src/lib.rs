@@ -685,6 +685,56 @@ fn get_pin(state: State<AppState>) -> PinState {
     state.pin.lock().unwrap().clone()
 }
 
+/// 单层完整手绘图，供「看整层」使用。
+/// 与叠加无关：不需要对准游戏画面，就是把这一层原样摊开给用户看，
+/// 解决「地图放大了看不到其它区域」和「想先看看另一层长什么样」。
+#[derive(Serialize)]
+struct FloorMapOut {
+    variant: String,
+    name: String,
+    floor: String,
+    draw_png: String,
+    /// 门位，已换算到手绘图自身的像素坐标
+    doors: Vec<DoorOut>,
+    w: u32,
+    h: u32,
+}
+
+#[tauri::command]
+fn floor_map(state: State<AppState>, variant: String, floor: String) -> Result<FloorMapOut, String> {
+    ensure_lib(&state)?;
+    let g = state.lib.lock().unwrap();
+    let lib = g.as_ref().unwrap();
+    let e = lib
+        .entries
+        .iter()
+        .find(|e| e.variant == variant && e.floor == floor)
+        .ok_or_else(|| format!("参考库里没有 {variant} 的 {floor}"))?;
+    let bytes = std::fs::read(&e.draw_path).map_err(|x| x.to_string())?;
+    let (w, h) = image::image_dimensions(&e.draw_path).map_err(|x| x.to_string())?;
+    // 门位存的是参考图坐标；这里要的是手绘图自身坐标，反解 tf_draw_to_game：
+    // ref = d·a.scale + a.t  ⇒  d = (ref − a.t)/a.scale
+    let a = e.tf_draw_to_game;
+    let doors = e
+        .doors
+        .iter()
+        .map(|d| DoorOut {
+            label: d.label.clone(),
+            x: (d.x - a.tx) / a.scale,
+            y: (d.y - a.ty) / a.scale,
+        })
+        .collect();
+    Ok(FloorMapOut {
+        variant,
+        name: e.name.clone(),
+        floor,
+        draw_png: B64.encode(bytes),
+        doors,
+        w,
+        h,
+    })
+}
+
 /// 参考库里的全部变体与楼层，供界面做手动选择
 #[tauri::command]
 fn list_maps(state: State<AppState>) -> Result<serde_json::Value, String> {
@@ -850,6 +900,7 @@ pub fn run() {
         set_pin,
         get_pin,
         list_maps,
+        floor_map,
         capabilities,
         overlay_update,
         overlay_hide
@@ -883,6 +934,7 @@ pub fn run() {
             set_pin,
             get_pin,
             list_maps,
+            floor_map,
             capabilities,
             request_capture,
             stop_capture,

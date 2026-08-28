@@ -63,20 +63,7 @@ async function render(p) {
   ctx.globalAlpha = alpha;
   ctx.drawImage(draw, 0, 0);
   ctx.restore();
-  const r = Math.max(8, canvas.height * 0.014);
-  ctx.font = `bold ${Math.max(15, canvas.height * 0.026)}px "PingFang SC", sans-serif`;
-  for (const d of p.doors) {
-    ctx.strokeStyle = "#ff5050";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = "#ff7878";
-    ctx.strokeStyle = "#000";
-    ctx.lineWidth = 3;
-    ctx.strokeText(d.label, d.x + r + 4, d.y + 5);
-    ctx.fillText(d.label, d.x + r + 4, d.y + 5);
-  }
+  drawDoors(p.doors);
 }
 
 /// 排障用：把实际抓到的整帧画到 canvas 上，用户截图即可看出抓到的是什么
@@ -105,22 +92,35 @@ function renderGeom(p, shotW) {
 }
 
 // ---------------------------------------------------------------------------
-// 手动锁定：认对了就钉住变体/楼层，之后只跟这几张比。
-// 既治「主界面被认成某张地图」，也让用户能纠正楼层判错。
+// 锁定地图 + 看整层
+//
+// 两件互相独立的事，别混为一谈：
+//   锁定（pin）  —— 收窄**匹配**范围，治「主界面被认成某张地图」；
+//   看整层（view）—— 只管**显示**：把某一层的完整手绘图原样摊开，
+//                    不需要跟游戏画面对齐，也不受游戏当前在哪层影响。
+// 后者才是「地图放大了看不到别处」「想先看看另一层」的解法。
 // ---------------------------------------------------------------------------
 let pin = { variant: null, floor: null, name: null };
+let viewFloor = null;   // 非空 = 正在看整层，画布不再被实时识别结果覆盖
+let viewCache = {};     // 楼层图按 变体|楼层 缓存，切层不用重新过桥
+
+/// 当前可供查看的变体：优先用户锁定的，其次最近一次识别到的
+function viewVariant() {
+  return pin.variant || lastPayload?.variant || null;
+}
 
 function renderPin() {
   $("sel-map").value = pin.variant || "";
   for (const b of document.querySelectorAll("#pinbar button.floor")) {
-    b.classList.toggle("on", (b.dataset.floor || null) === pin.floor);
+    b.classList.toggle("on", (b.dataset.floor || null) === viewFloor);
+    b.disabled = !!b.dataset.floor && !viewVariant();
   }
   const btn = $("btn-pin");
   btn.textContent = pin.variant ? "解除锁定" : "锁定当前";
   btn.disabled = !pin.variant && !lastPayload;
   const bits = [];
   if (pin.variant) bits.push(`已锁 ${pin.name || pin.variant}`);
-  if (pin.floor) bits.push(`只看${floorCn(pin.floor)}`);
+  if (viewFloor) bits.push(`正在看${floorCn(viewFloor)}整层`);
   $("pinstate").textContent = bits.join(" · ");
 }
 
@@ -133,6 +133,40 @@ async function applyPin(next) {
   renderPin();
 }
 
+/// 把某一层的完整手绘图画到画布上（黑底原样显示，再标门位）。
+/// 与叠加无关：这里不做任何对齐，就是让用户看清整层长什么样。
+async function showFloor(floor) {
+  viewFloor = floor;
+  renderPin();
+  if (!floor) {
+    setStatus("已回到跟随游戏显示");
+    return;
+  }
+  const variant = viewVariant();
+  if (!variant) return;
+  const key = `${variant}|${floor}`;
+  // 39 张手绘图共 11 MB，全缓存在手机上太重；留最近几张够用了
+  const keys = Object.keys(viewCache);
+  if (keys.length > 4 && !viewCache[key]) delete viewCache[keys[0]];
+  try {
+    viewCache[key] ||= await invoke("floor_map", { variant, floor });
+  } catch (e) {
+    setStatus(String(e), "warn");
+    return;
+  }
+  const m = viewCache[key];
+  const im = await loadImg(m.draw_png);
+  canvas.width = m.w;
+  canvas.height = m.h;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(im, 0, 0);
+  drawDoors(m.doors);
+  $("geom").textContent = `整层 ${m.name} · ${floorCn(m.floor)}　${m.w}×${m.h}`;
+  setStatus(`看整层：${m.name} · ${floorCn(m.floor)}（不随游戏画面变化）`);
+  renderCandidates([]);
+}
+
 async function initPinUi() {
   const sel = $("sel-map");
   let maps = [];
@@ -140,27 +174,44 @@ async function initPinUi() {
   sel.innerHTML =
     `<option value="">自动识别地图</option>` +
     maps.map((m) => `<option value="${m.variant}">锁定：${m.name}</option>`).join("");
-  sel.addEventListener("change", () => {
+  sel.addEventListener("change", async () => {
     const v = sel.value || null;
-    applyPin({ variant: v, floor: pin.floor, name: v ? sel.selectedOptions[0].text.slice(3) : null });
+    await applyPin({
+      variant: v,
+      floor: null,
+      name: v ? sel.selectedOptions[0].text.slice(3) : null,
+    });
+    // 换了地图，正在看的那一层要换成新地图的同一层
+    if (viewFloor) showFloor(viewFloor);
   });
   for (const b of document.querySelectorAll("#pinbar button.floor")) {
-    b.addEventListener("click", () =>
-      applyPin({ variant: pin.variant, floor: b.dataset.floor || null, name: pin.name })
-    );
+    b.addEventListener("click", () => showFloor(b.dataset.floor || null));
   }
   // 主按钮：一键钉住当前识别结果，不用自己在 13 个名字里找
   $("btn-pin").addEventListener("click", () => {
-    if (pin.variant) return applyPin({ variant: null, floor: pin.floor, name: null });
+    if (pin.variant) return applyPin({ variant: null, floor: null, name: null });
     if (!lastPayload) return;
-    return applyPin({
-      variant: lastPayload.variant,
-      floor: pin.floor,
-      name: lastPayload.name,
-    });
+    return applyPin({ variant: lastPayload.variant, floor: null, name: lastPayload.name });
   });
   try { pin = await invoke("get_pin"); } catch { /* 旧版后端 */ }
   renderPin();
+}
+
+function drawDoors(doors) {
+  const r = Math.max(8, canvas.height * 0.014);
+  ctx.font = `bold ${Math.max(15, canvas.height * 0.026)}px "PingFang SC", sans-serif`;
+  for (const d of doors) {
+    ctx.strokeStyle = "#ff5050";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "#ff7878";
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 3;
+    ctx.strokeText(d.label, d.x + r + 4, d.y + 5);
+    ctx.fillText(d.label, d.x + r + 4, d.y + 5);
+  }
 }
 
 function renderCandidates(list) {
@@ -244,6 +295,8 @@ async function analyzeOnce(auto) {
       pending = { key: null, n: 0 };
       lowConfMiss = 0;
       await hideOverlay();
+      // 看整层时用户是在读地图，识别的动静不该抢走画布和状态栏
+      if (viewFloor) return "miss";
       // 自动模式下也要更新状态：否则用户只看到停留不动的旧文字，
       // 无法判断它到底在不在工作（真机排障时踩过这个坑）
       setStatus(`未识别到地图（抓到 ${p.frame_w}×${p.frame_h}）：${p.reason}`, "warn");
@@ -257,6 +310,7 @@ async function analyzeOnce(auto) {
       // 证据不足（后端仍在多帧投票）：面板在就继续攒证据，不显示叠加
       lowConfMiss += 1;
       if (lowConfMiss >= 2) await hideOverlay();
+      if (viewFloor) return "hit";
       const pct = Math.min(99, Math.round((p.evidence / p.evidence_need) * 100));
       setStatus(
         `识别中 ${pct}%（当前最像 ${p.name}·${floorCn(p.floor)} ${p.score.toFixed(2)}）`,
@@ -267,16 +321,21 @@ async function analyzeOnce(auto) {
     }
     lowConfMiss = 0;
     shownKey = key;
+    const variantChanged = lastPayload?.variant !== p.variant;
     lastPayload = p;
-    renderPin(); // 有结果了，「锁定当前」才可点
-    const tag = { tracking: "跟踪", pinned: "手动锁定" }[p.phase] || "已锁定";
-    setStatus(
-      `${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}　` +
-      `领先次佳 ${p.advantage.toFixed(3)}　${tag}`,
-      "ok"
-    );
-    renderCandidates(p.candidates);
-    await render(p);
+    // 只在变体变化时刷新锁定条：每轮都改写下拉框会打断用户正在进行的选择
+    if (variantChanged) renderPin();
+    // 看整层时只推叠加层（悬浮窗照旧跟着游戏走），画布与状态栏归整层视图
+    if (!viewFloor) {
+      const tag = { tracking: "跟踪", pinned: "手动锁定" }[p.phase] || "已锁定";
+      setStatus(
+        `${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}　` +
+        `领先次佳 ${p.advantage.toFixed(3)}　${tag}`,
+        "ok"
+      );
+      renderCandidates(p.candidates);
+      await render(p);
+    }
     await pushOverlay(false);
     return "hit";
   } catch (e) {
@@ -337,7 +396,7 @@ $("chk-overlay").addEventListener("change", async (ev) => {
 });
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
 $("rng-alpha").addEventListener("input", () => {
-  if (lastPayload) render(lastPayload);
+  if (lastPayload && !viewFloor) render(lastPayload);
   pushOverlay(false); // alpha 变化会改变指纹，自动重推
 });
 listen("overlay-ready", () => pushOverlay(true));
