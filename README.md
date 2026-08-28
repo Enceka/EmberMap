@@ -26,6 +26,14 @@ cd app && npx @tauri-apps/cli build            # 打发行包（dmg/nsis/deb/App
 不挡操作、对抓屏隐形）/ 并排窗口模式 / 窗口置顶 / 叠加透明度 /
 全局热键 **⇧⌥M** 切换覆盖层、**⇧⌥R** 重新识别。
 
+Android 端同样可用（模拟器验证，真机待测）：投屏取帧 + 悬浮窗叠加，
+识别结果与桌面一致。构建：
+
+```bash
+export ANDROID_HOME=<sdk> NDK_HOME=<sdk>/ndk/<版本>
+cd app && cargo tauri android build --target aarch64 --target x86_64 --apk
+```
+
 识别策略：首次识别慢而准（全库多尺度，多帧投票攒够证据才锁定，证据不足
 宁可持续显示「识别中」）；锁定后仍每帧全库扫描，锁只作显示粘滞，
 所以误判能在两帧内自我纠正。详见 `app/src-tauri/src/tracker.rs`。
