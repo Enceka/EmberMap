@@ -5,5 +5,15 @@ __pycache__/
 em-core/target/
 app/src-tauri/target/
 app/node_modules/
-app/src-tauri/gen/
+app/src-tauri/gen/schemas/
+# Android 工程需入库（含手写的 MainActivity 资产解压逻辑），但排除构建产物
+app/src-tauri/gen/android/.gradle/
+app/src-tauri/gen/android/build/
+app/src-tauri/gen/android/app/build/
+app/src-tauri/gen/android/buildSrc/build/
+app/src-tauri/gen/android/local.properties
+app/src-tauri/gen/android/app/src/main/jniLibs/
+# 数据包由构建时从 app/bundle 复制进来，勿重复入库
+app/src-tauri/gen/android/app/src/main/assets/
+app/src-tauri/gen/android/app/src/main/java/*/*/*/generated/
 test/
