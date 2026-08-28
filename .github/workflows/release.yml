@@ -1,21 +1,83 @@
 name: Release
 
-# 打 tag 即发布：git tag v0.1.0 && git push origin v0.1.0
-# 四个平台构建完毕并全部上传后，publish job 自动把草稿 Release 转为正式
+# 三条发布路径，共用同一套构建：
+#   打 tag v*   → 正式版，Release 名 EmberMap v0.1.0
+#   推 main     → 测试版，滚动覆盖 nightly 这一个预发布（旧的先删再传）
+#   手动 dispatch → 测试版，用填入的 tag 名，标为预发布
+# 三条都是：四个平台先传进同一个草稿 Release，全部成功后 publish job 转正式。
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: 手动发布用的 tag 名（如 v0.1.0-test）
+        description: 手动发布用的 tag 名（如 v0.1.0-test），发预发布
         required: true
 
 permissions:
   contents: write
 
+# 同一目标不并发：连推两次 main 时后一次取消前一次，
+# 免得两个 run 抢同一个 nightly Release（一边删一边传）
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  meta:
+    name: 确定发布参数
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      name: ${{ steps.plan.outputs.name }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      banner: ${{ steps.plan.outputs.banner }}
+    steps:
+      - name: 按触发方式决定 tag / 名称 / 是否预发布
+        id: plan
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          short="${SHA:0:7}"
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+            name="EmberMap $INPUT_TAG（测试）"
+            pre=true
+            banner="> ⚠️ 手动触发的测试构建（commit $short），未经实机验证。"
+          elif [ "$REF_TYPE" = tag ]; then
+            tag="$REF_NAME"
+            name="EmberMap $REF_NAME"
+            pre=false
+            banner=""
+          else
+            tag=nightly
+            name="EmberMap 测试版（main）"
+            pre=true
+            banner="> ⚠️ main 分支的滚动测试构建（commit $short），每次推送覆盖，未经实机验证。要稳定版请找带版本号的正式 Release。"
+          fi
+          {
+            echo "tag=$tag"
+            echo "name=$name"
+            echo "prerelease=$pre"
+            echo "banner=$banner"
+          } >> "$GITHUB_OUTPUT"
+          echo "本次发布：$tag（prerelease=$pre）"
+
+      # nightly 是滚动的：不先删，上一轮的产物会和这一轮混在同一个 Release 里
+      - name: 清掉上一份 nightly
+        if: steps.plan.outputs.tag == 'nightly'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" \
+            || echo "没有旧的 nightly，跳过"
+
   build:
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -76,9 +138,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: app
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: EmberMap ${{ github.event.inputs.tag || github.ref_name }}
+          tagName: ${{ needs.meta.outputs.tag }}
+          releaseName: ${{ needs.meta.outputs.name }}
           releaseBody: |
+            ${{ needs.meta.outputs.banner }}
+
             第五人格加页手记地图识别辅助（噩梦难度）。
 
             **平台包**：macOS 用 `.dmg`（Apple Silicon 选 arm64、Intel 选 x64），
@@ -96,7 +160,7 @@ jobs:
             > 本工具只处理屏幕画面，不读取游戏内存、不注入、不模拟操作。
             > 地图素材来源见仓库 README 结尾。
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ needs.meta.outputs.prerelease }}
           args: --target ${{ matrix.target }}
 
   # 四个平台先各自上传到同一个草稿 Release（草稿期间外部看不到，
@@ -104,11 +168,11 @@ jobs:
   # 任一平台失败则此 job 跳过，Release 留作草稿，可修完重跑。
   publish:
     name: 发布 Release
-    needs: build
+    needs: [meta, build]
     runs-on: ubuntu-latest
     steps:
       - name: 草稿转正式
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.meta.outputs.tag }}
         run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
