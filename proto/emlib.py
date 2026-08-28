@@ -30,15 +30,27 @@ def _in_range(hsv, lo_hi):
 
 
 def structure_mask(img_bgr, style):
-    """提取可行走结构掩码。style: 'game' | 'draw'。
+    """提取可行走结构掩码。style: 'game' | 'draw'。"""
+    return structure_mask_parts(img_bgr, style)[0]
+
+
+def structure_mask_parts(img_bgr, style):
+    """同 structure_mask，另返回「房间」子掩码（棕色地板）。
 
     去噪策略：先中值滤波压掉细水印笔画和 JPEG 噪点，再按颜色分割，
     然后开运算去孤立小块、闭运算补上被文字/路线遮挡的洞。
+
+    房间占比用于区分真地图与误检：手机上地图界面半透明，透出的 3D 场景
+    天空落进走廊色域、地面落进房间色域，会形成比真地图更大的连通块，
+    但那些块几乎是纯单色（实测房间占比 0.0-0.2%），
+    而真地图必然走廊与房间混合（实测 23%）。
     """
     img = cv2.medianBlur(img_bgr, 5)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    room_raw = None
     if style == "game":
-        mask = _in_range(hsv, GAME_CORRIDOR) | _in_range(hsv, GAME_ROOM)
+        room_raw = _in_range(hsv, GAME_ROOM)
+        mask = _in_range(hsv, GAME_CORRIDOR) | room_raw
     elif style == "draw":
         mask = _in_range(hsv, DRAW_CORRIDOR) | _in_range(hsv, DRAW_ROOM) | _in_range(hsv, DRAW_GOLD)
     else:
@@ -52,7 +64,9 @@ def structure_mask(img_bgr, style):
     keep = np.zeros(n, bool)
     for i in range(1, n):
         keep[i] = stats[i, cv2.CC_STAT_AREA] >= 400
-    return np.where(keep[labels], 255, 0).astype(np.uint8)
+    mask = np.where(keep[labels], 255, 0).astype(np.uint8)
+    room = np.zeros_like(mask) if room_raw is None else ((mask > 0) & (room_raw > 0)) * np.uint8(255)
+    return mask, room
 
 
 # ---------------------------------------------------------------------------
@@ -192,23 +206,37 @@ def crop(arr, bbox):
     return arr[y:y + h, x:x + w]
 
 
-def find_map_region(mask, close=75, margin=30, min_area=8000):
+#: 判定为地图所需的最低房间像素占比。真地图实测 23%，
+#: 半透明界面透出的 3D 场景 0.0-0.2%；取 0.04 给开局只露一角的房间留余量。
+MIN_ROOM_FRAC = 0.04
+
+
+def find_map_region(mask, room=None, close=75, margin=30, min_area=8000):
     """从整帧结构掩码里自动定位地图面板区域，返回 bbox 或 None。
 
     地图结构是画面里最大的一团彼此邻近的掩码块；UI 图标/文字虽然
-    色相相同，但零散且远离地图。大核闭运算把邻近块并成整团后取
-    掩码像素最多的一团，bbox 外扩 margin。
+    色相相同，但零散且远离地图。大核闭运算把邻近块并成整团后，
+    优先取「走廊与房间混合」的团（见 structure_mask_parts），
+    都不达标时再退回取掩码像素最多的一团，bbox 外扩 margin。
     """
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close, close))
     merged = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ker)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(merged, 8)
     best, best_area = None, 0
+    best_mixed, best_mixed_area = None, 0
     for i in range(1, n):
         x, y, w, h = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP], \
             stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
-        area = int(np.count_nonzero(mask[y:y + h, x:x + w][labels[y:y + h, x:x + w] == i]))
+        sel = labels[y:y + h, x:x + w] == i
+        area = int(np.count_nonzero(mask[y:y + h, x:x + w][sel]))
         if area > best_area:
             best, best_area = (x, y, w, h), area
+        if room is not None and area >= min_area:
+            r = int(np.count_nonzero(room[y:y + h, x:x + w][sel]))
+            if r >= area * MIN_ROOM_FRAC and area > best_mixed_area:
+                best_mixed, best_mixed_area = (x, y, w, h), area
+    if best_mixed is not None:
+        best, best_area = best_mixed, best_mixed_area
     if best is None or best_area < min_area:
         return None
     x, y, w, h = best

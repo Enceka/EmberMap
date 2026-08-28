@@ -32,8 +32,8 @@ def main(shot_path):
         gmeta = json.load(f)
 
     shot = cv2.imread(shot_path)
-    mask = emlib.structure_mask(shot, "game")
-    bbox = emlib.find_map_region(mask)
+    mask, room = emlib.structure_mask_parts(shot, "game")
+    bbox = emlib.find_map_region(mask, room)
     x, y, w, h = bbox
     q_mask = mask[y:y + h, x:x + w]
     r = emlib.match_query(q_mask, game)[0]

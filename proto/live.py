@@ -37,8 +37,8 @@ def capture(path):
 def process(img, ctx, out_path):
     """返回 (状态字符串, 是否成功)。成功时叠加图写到 out_path。"""
     game, draw, gm2draw, doors = ctx
-    mask = emlib.structure_mask(img, "game")
-    bbox = emlib.find_map_region(mask)
+    mask, room = emlib.structure_mask_parts(img, "game")
+    bbox = emlib.find_map_region(mask, room)
     if bbox is None:
         return "未检测到地图面板", False
     # 探索形状任意，不检查长宽比；但地图面板不会贴屏幕边（UI 有边距），

@@ -95,14 +95,17 @@ pub fn analyze_with(
     let f = (w.max(h) as f64 / opt.target_long_edge).round().max(1.0) as usize;
     let (ds, dw, dh) = img::downscale_rgb(rgb, w, h, f);
     let f2 = f * f;
-    let m = mask::structure_mask(&ds, dw, dh, (400 / f2).max(100));
-    let Some(panel_ds) = mask::find_map_region(&m, 37.0 / f as f32, 30 / f, (8000 / f2).max(1500))
+    let (m, room) = mask::structure_mask_parts(&ds, dw, dh, (400 / f2).max(100));
+    let Some(panel_ds) =
+        mask::find_map_region(&m, &room, 37.0 / f as f32, 30 / f, (8000 / f2).max(1500))
     else {
         return Analysis::NoPanel { reason: "未检测到地图面板".into() };
     };
     let [x, y, pw, ph] = panel_ds;
     // 面板不会贴屏幕边（UI 有边距）；3D 场景误检几乎都贴边或铺满全屏
-    if pw < 180 / f || ph < 180 / f || x <= 2 || y <= 2
+    // 下限放宽到 120：开局只探索出生点附近时地图确实很小
+    // （真机实测 177×162），能否采信交给多帧证据判断
+    if pw < 120 / f || ph < 120 / f || x <= 2 || y <= 2
         || x + pw >= dw - 2 || y + ph >= dh - 2 || pw * ph > dw * dh * 7 / 10
     {
         return Analysis::NoPanel {
