@@ -94,7 +94,7 @@ fn probe_score(rgb: &[u8], w: usize, h: usize, f: usize, c: [usize; 4], lib: &Li
     let fw = (cw0 * f).min(w - fx);
     let fh = (ch0 * f).min(h - fy);
     let g = ((fw.max(fh) as f64 / 500.0).round() as usize).max(1);
-    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, h, fx, fy, fw, fh, g);
+    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, fx, fy, fw, fh, g);
     let (q, _) = mask::structure_mask_parts(&pc, cw, ch, (400 / (g * g)).max(100));
     if q.count_nonzero() < 500 {
         return 0.0;
@@ -164,9 +164,8 @@ pub fn analyze_with(
     // 首选是「有房间的最大团」，绝大多数情况就是对的。
     // 只有当它自己都不像地图时（真机上地图缩到最小、半透明界面透出的 3D 场景
     // 形成更大的混合团），才逐个探测其余候选——避免探测把本来正确的选择带偏。
-    let [x, y, pw, ph] = if ok.len() == 1 {
-        first
-    } else if probe_score(rgb, w, h, f, first, lib) >= PROBE_TRUST {
+    let trust_first = ok.len() == 1 || probe_score(rgb, w, h, f, first, lib) >= PROBE_TRUST;
+    let [x, y, pw, ph] = if trust_first {
         first
     } else {
         probe_best_candidate(rgb, w, h, f, &ok, lib).unwrap_or(first)
@@ -179,7 +178,7 @@ pub fn analyze_with(
     let fw = (pw * f).min(w - fx);
     let fh = (ph * f).min(h - fy);
     let g = ((fw.max(fh) as f64 / 900.0).round() as usize).max(1);
-    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, h, fx, fy, fw, fh, g);
+    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, fx, fy, fw, fh, g);
     let g2 = g * g;
     let (q, _) = mask::structure_mask_parts(&pc, cw, ch, (400 / g2).max(100));
     if q.count_nonzero() < (5000 / g2).max(1000) {

@@ -67,7 +67,7 @@ pub fn downscale_rgb(rgb: &[u8], w: usize, h: usize, f: usize) -> (Vec<u8>, usiz
 /// 裁剪并整数倍盒式降采样（均值）。用于「先定位面板、再按全分辨率提取该区域」：
 /// 地图在屏幕上占比小时，若沿用整帧降采样后的掩码，剩下的像素不足以判别。
 pub fn crop_downscale_rgb(
-    rgb: &[u8], w: usize, _h: usize,
+    rgb: &[u8], w: usize,
     x: usize, y: usize, cw: usize, ch: usize, f: usize,
 ) -> (Vec<u8>, usize, usize) {
     let (tw, th) = ((cw / f).max(1), (ch / f).max(1));
