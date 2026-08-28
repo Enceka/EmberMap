@@ -64,6 +64,34 @@ pub fn downscale_rgb(rgb: &[u8], w: usize, h: usize, f: usize) -> (Vec<u8>, usiz
     (out, tw, th)
 }
 
+/// 裁剪并整数倍盒式降采样（均值）。用于「先定位面板、再按全分辨率提取该区域」：
+/// 地图在屏幕上占比小时，若沿用整帧降采样后的掩码，剩下的像素不足以判别。
+pub fn crop_downscale_rgb(
+    rgb: &[u8], w: usize, _h: usize,
+    x: usize, y: usize, cw: usize, ch: usize, f: usize,
+) -> (Vec<u8>, usize, usize) {
+    let (tw, th) = ((cw / f).max(1), (ch / f).max(1));
+    let mut out = vec![0u8; tw * th * 3];
+    out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
+        for tx in 0..tw {
+            let mut acc = [0u32; 3];
+            for dy in 0..f {
+                let base = ((y + ty * f + dy) * w + x + tx * f) * 3;
+                for dx in 0..f {
+                    for c in 0..3 {
+                        acc[c] += rgb[base + dx * 3 + c] as u32;
+                    }
+                }
+            }
+            let n = (f * f) as u32;
+            for c in 0..3 {
+                row[tx * 3 + c] = (acc[c] / n) as u8;
+            }
+        }
+    });
+    (out, tw, th)
+}
+
 /// RGB8 交错格式的 5×5 逐通道中值滤波（边界复制），对齐 cv2.medianBlur(img, 5)。
 pub fn median5_rgb(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 3];

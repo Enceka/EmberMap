@@ -76,6 +76,51 @@ impl Options {
     }
 }
 
+/// 首选候选达到此分即直接采信，不再探测其余候选
+const PROBE_TRUST: f32 = 0.75;
+
+/// 一个候选区域「有多像库里的地图」：低分辨率 + 抽样库的粗匹配。
+/// 真地图对某张参考总能拿到 0.8+，3D 场景对任何参考都只有 0.6 上下。
+fn probe_score(rgb: &[u8], w: usize, h: usize, f: usize, c: [usize; 4], lib: &Library) -> f32 {
+    let masks: Vec<&img::Gray> = lib.entries.iter().step_by(2).map(|e| &e.mask).collect();
+    let opts = matcher::MatchOpts {
+        coarse_long_edge: 140,
+        refine_long_edge: 140,
+        refine_top: 0,
+        prior_scale: None,
+    };
+    let [cx, cy, cw0, ch0] = c;
+    let (fx, fy) = (cx * f, cy * f);
+    let fw = (cw0 * f).min(w - fx);
+    let fh = (ch0 * f).min(h - fy);
+    let g = ((fw.max(fh) as f64 / 500.0).round() as usize).max(1);
+    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, h, fx, fy, fw, fh, g);
+    let (q, _) = mask::structure_mask_parts(&pc, cw, ch, (400 / (g * g)).max(100));
+    if q.count_nonzero() < 500 {
+        return 0.0;
+    }
+    matcher::match_query_opts(&q, &masks, &opts)
+        .first()
+        .map(|r| r.score)
+        .unwrap_or(0.0)
+}
+
+/// 从多个候选区域里挑「最像地图」的那个
+fn probe_best_candidate(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    f: usize,
+    cands: &[[usize; 4]],
+    lib: &Library,
+) -> Option<[usize; 4]> {
+    cands
+        .iter()
+        .map(|&c| (c, probe_score(rgb, w, h, f, c, lib)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(c, _)| c)
+}
+
 /// 分析一帧截图（RGB8 交错），默认 acquire 质量、全库。
 pub fn analyze(rgb: &[u8], w: usize, h: usize, lib: &Library) -> Analysis {
     analyze_with(rgb, w, h, lib, None, &Options::acquire())
@@ -96,24 +141,48 @@ pub fn analyze_with(
     let (ds, dw, dh) = img::downscale_rgb(rgb, w, h, f);
     let f2 = f * f;
     let (m, room) = mask::structure_mask_parts(&ds, dw, dh, (400 / f2).max(100));
-    let Some(panel_ds) =
-        mask::find_map_region(&m, &room, 37.0 / f as f32, 30 / f, (8000 / f2).max(1500))
-    else {
+    let cands = mask::find_map_candidates(&m, &room, 37.0 / f as f32, 30 / f, (8000 / f2).max(1500), 4);
+    if cands.is_empty() {
         return Analysis::NoPanel { reason: "未检测到地图面板".into() };
-    };
-    let [x, y, pw, ph] = panel_ds;
-    // 面板不会贴屏幕边（UI 有边距）；3D 场景误检几乎都贴边或铺满全屏
-    // 下限放宽到 120：开局只探索出生点附近时地图确实很小
-    // （真机实测 177×162），能否采信交给多帧证据判断
-    if pw < 120 / f || ph < 120 / f || x <= 2 || y <= 2
-        || x + pw >= dw - 2 || y + ph >= dh - 2 || pw * ph > dw * dh * 7 / 10
-    {
+    }
+    // 面板不会贴屏幕边（UI 有边距）；3D 场景误检几乎都贴边或铺满全屏。
+    // 下限 120：开局只探索出生点附近时地图确实很小（真机实测 177×162）。
+    let ok: Vec<[usize; 4]> = cands
+        .iter()
+        .copied()
+        .filter(|&[x, y, pw, ph]| {
+            pw >= 120 / f && ph >= 120 / f && x > 2 && y > 2
+                && x + pw < dw - 2 && y + ph < dh - 2 && pw * ph <= dw * dh * 7 / 10
+        })
+        .collect();
+    let Some(&first) = ok.first() else {
+        let [x, y, pw, ph] = cands[0];
         return Analysis::NoPanel {
             reason: format!("检测区域不像地图面板（{}×{}@{},{}）", pw * f, ph * f, x * f, y * f),
         };
-    }
-    let q = m.crop(x, y, pw, ph);
-    if q.count_nonzero() < (5000 / f2).max(1000) {
+    };
+    // 首选是「有房间的最大团」，绝大多数情况就是对的。
+    // 只有当它自己都不像地图时（真机上地图缩到最小、半透明界面透出的 3D 场景
+    // 形成更大的混合团），才逐个探测其余候选——避免探测把本来正确的选择带偏。
+    let [x, y, pw, ph] = if ok.len() == 1 {
+        first
+    } else if probe_score(rgb, w, h, f, first, lib) >= PROBE_TRUST {
+        first
+    } else {
+        probe_best_candidate(rgb, w, h, f, &ok, lib).unwrap_or(first)
+    };
+    // 第二段：按全分辨率重新提取面板区域的掩码。
+    // 只用整帧降采样后的掩码会让「地图在屏幕上很小」时判别力崩掉——
+    // 真机把游戏地图缩到最小时，降采样后面板只剩几十像素，13 个变体分数并列。
+    // 面板本身再按需降到长边 ~900（超过这个分辨率对匹配无增益，只增耗时）。
+    let (fx, fy) = (x * f, y * f);
+    let fw = (pw * f).min(w - fx);
+    let fh = (ph * f).min(h - fy);
+    let g = ((fw.max(fh) as f64 / 900.0).round() as usize).max(1);
+    let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, h, fx, fy, fw, fh, g);
+    let g2 = g * g;
+    let (q, _) = mask::structure_mask_parts(&pc, cw, ch, (400 / g2).max(100));
+    if q.count_nonzero() < (5000 / g2).max(1000) {
         return Analysis::NoPanel { reason: "地图区域太小".into() };
     }
     let sel: Vec<usize> = lib
@@ -124,9 +193,9 @@ pub fn analyze_with(
         .map(|(i, _)| i)
         .collect();
     let masks: Vec<&img::Gray> = sel.iter().map(|&i| &lib.entries[i].mask).collect();
-    // 先验换算到本帧降采样坐标系（f 随分析分辨率变化，故不能跨帧直接复用 ds 尺度）
+    // 先验是全分辨率尺度，换算到面板裁剪坐标系（该坐标系比全分辨率小 g 倍）
     let mopts = matcher::MatchOpts {
-        prior_scale: opt.prior_scale_full.map(|s| s * f as f64),
+        prior_scale: opt.prior_scale_full.map(|s| s * g as f64),
         ..opt.match_opts
     };
     let scores = matcher::match_query_opts(&q, &masks, &mopts);
@@ -134,22 +203,23 @@ pub fn analyze_with(
         .iter()
         .map(|s| {
             let e = &lib.entries[sel[s.entry]];
+            // 变换的查询坐标系是「面板裁剪 / g」，换算成全分辨率面板局部坐标
+            let tf = Transform {
+                scale: s.transform.scale / g as f64,
+                tx: s.transform.tx,
+                ty: s.transform.ty,
+            };
             Candidate {
                 variant: e.variant.clone(),
                 name: e.name.clone(),
                 floor: e.floor.clone(),
                 score: s.score,
-                // q(降采样面板 px)→game 换算成 q(全分辨率面板 px)→game
-                transform: Transform {
-                    scale: s.transform.scale / f as f64,
-                    tx: s.transform.tx,
-                    ty: s.transform.ty,
-                },
-                scale_full: s.transform.scale / f as f64,
+                transform: tf,
+                scale_full: tf.scale,
             }
         })
         .collect();
     let confident = candidates.first().is_some_and(|c| c.score >= CONFIDENCE_GATE);
-    let panel = [x * f, y * f, (pw * f).min(w - x * f), (ph * f).min(h - y * f)];
+    let panel = [fx, fy, fw, fh];
     Analysis::Matched { panel, confident, candidates }
 }

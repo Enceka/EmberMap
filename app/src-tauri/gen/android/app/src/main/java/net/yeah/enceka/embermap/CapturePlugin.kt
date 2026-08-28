@@ -350,13 +350,20 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     // NOT_TOUCHABLE = 触摸完全穿透到游戏；
                     // SECURE = 本层不进入投屏画面，避免自己识别自己
+                    // 不加 FLAG_SECURE：取帧时本来就会先隐藏悬浮窗（见 grabOnWorker），
+                    // 不带 SECURE 才能让用户截图核对叠加位置
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                         WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                        WindowManager.LayoutParams.FLAG_SECURE,
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT
                 )
                 lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                // 不声明就绕开挖孔区，窗口会被系统整体推开——横屏时刘海在侧边，
+                // 偏移量可达上百像素，叠加层就对不准了
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                }
                 lp.x = args.x
                 lp.y = args.y
 

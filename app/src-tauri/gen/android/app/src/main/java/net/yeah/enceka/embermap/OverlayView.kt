@@ -71,6 +71,14 @@ class OverlayView(context: Context) : View(context) {
         m.postTranslate(a.tx.toFloat(), a.ty.toFloat())
         canvas.drawBitmap(bmp, m, bmpPaint)
 
+        // 边框：让用户一眼看出叠加层落在哪，便于核对是否对准
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.argb(150, 80, 200, 120)
+        }
+        canvas.drawRect(1.5f, 1.5f, width - 1.5f, height - 1.5f, border)
+
         val r = maxOf(8f, height * 0.014f)
         val size = maxOf(15f, height * 0.026f)
         textFill.textSize = size

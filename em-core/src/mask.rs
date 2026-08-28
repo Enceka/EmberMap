@@ -50,17 +50,22 @@ pub fn structure_mask_parts(rgb: &[u8], w: usize, h: usize, min_area: usize) -> 
 
 /// 自动定位地图面板：大半径闭运算并块后取掩码像素最多的一团，bbox 外扩 margin。
 /// 对齐 emlib.find_map_region；全分辨率语义 close_r=37, margin=30, min_area=8000。
-pub fn find_map_region(
+/// 找出所有像地图面板的候选团（按面积降序，最多 max_n 个）。
+///
+/// 只给候选而不直接定夺：真机上地图缩到最小时，半透明界面下透出的 3D 场景
+/// 会形成比地图更大的「混合团」，取最大者必然选错；改由调用方用匹配分数决定。
+pub fn find_map_candidates(
     mask: &Gray,
     room: &Gray,
     close_r: f32,
     margin: usize,
     min_area: usize,
-) -> Option<[usize; 4]> {
+    max_n: usize,
+) -> Vec<[usize; 4]> {
     let merged = img::close(mask, close_r);
     let (labels, comps) = img::connected_components(&merged);
     if comps.is_empty() {
-        return None;
+        return Vec::new();
     }
     let mut counts = vec![0usize; comps.len()];
     let mut rooms = vec![0usize; comps.len()];
@@ -72,32 +77,32 @@ pub fn find_map_region(
             }
         }
     }
-    // 优先取「走廊与房间混合」的团：真地图必有棕色房间，而半透明界面下
-    // 透出的 3D 场景是纯单色。混合团都不达标时再退回取最大团。
-    let mixed = |i: usize| counts[i] >= min_area && rooms[i] * 100 >= counts[i] * MIN_ROOM_PERCENT;
-    let best = (0..counts.len())
-        .filter(|&i| mixed(i))
-        .max_by_key(|&i| counts[i])
-        .or_else(|| (0..counts.len()).max_by_key(|&i| counts[i]))?;
-    let best_area = counts[best];
-    if best_area < min_area {
-        return None;
-    }
-    // bbox 收缩到该团内真实掩码像素
+    // 真地图必有棕色房间；纯单色团（3D 场景）先排到后面
+    let mut idx: Vec<usize> = (0..counts.len()).filter(|&i| counts[i] >= min_area).collect();
+    idx.sort_by_key(|&i| {
+        let mixed = rooms[i] * 100 >= counts[i] * MIN_ROOM_PERCENT;
+        (!mixed, std::cmp::Reverse(counts[i]))
+    });
+    idx.truncate(max_n);
+
     let (w, h) = (mask.w, mask.h);
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            if mask.data[i] != 0 && labels[i] == best as u32 + 1 {
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x);
-                y1 = y1.max(y);
+    idx.into_iter()
+        .map(|best| {
+            let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = y * w + x;
+                    if mask.data[i] != 0 && labels[i] == best as u32 + 1 {
+                        x0 = x0.min(x);
+                        y0 = y0.min(y);
+                        x1 = x1.max(x);
+                        y1 = y1.max(y);
+                    }
+                }
             }
-        }
-    }
-    let rx = x0.saturating_sub(margin);
-    let ry = y0.saturating_sub(margin);
-    Some([rx, ry, (x1 + margin + 1).min(w) - rx, (y1 + margin + 1).min(h) - ry])
+            let rx = x0.saturating_sub(margin);
+            let ry = y0.saturating_sub(margin);
+            [rx, ry, (x1 + margin + 1).min(w) - rx, (y1 + margin + 1).min(h) - ry]
+        })
+        .collect()
 }
