@@ -12,7 +12,7 @@ env:
 jobs:
   core:
     name: em-core 测试与真值回归
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
 
   app:
     name: 应用构建与状态机测试
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,8 +44,10 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev patchelf \
             libxdo-dev libssl-dev \
             libpipewire-0.3-dev libdbus-1-dev libclang-dev
-          # xcap 在 Linux 上无条件编译 Wayland 抓屏路径（libspa-sys → pipewire），
-          # 没有特性开关可关，故 pipewire 开发包是必需的；libclang 供其 bindgen 用
+          # 必须用 24.04：xcap 在 Linux 上无条件编译 Wayland 抓屏路径
+          # （libspa-sys → pipewire），而 libspa 0.10 需要较新的 pipewire 头文件；
+          # 22.04 自带 pipewire 0.3.48，缺 spa_video_info_raw.flags 等字段会编译失败，
+          # 24.04 为 1.0.5。代价：产物链接 glibc 2.39，无法在更老的发行版上运行。
       - name: 状态机单元测试
         run: cargo test --release --manifest-path app/src-tauri/Cargo.toml
       - name: 构建检查
