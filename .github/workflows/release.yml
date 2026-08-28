@@ -170,6 +170,9 @@ jobs:
     name: 构建 Android APK
     needs: meta
     runs-on: ubuntu-24.04
+    # 签名密钥存在 release 这个 Environment 里，不声明的话 secrets.* 全取到
+    # 空串，会静默退化成一次性密钥签名
+    environment: release
     steps:
       - uses: actions/checkout@v4
 
