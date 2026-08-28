@@ -12,6 +12,7 @@ const ctx = canvas.getContext("2d");
 const IDLE_FAST = 300;    // 地图刚出现/结果变化时的轮询间歇 ms
 const IDLE_STABLE = 800;  // 结果稳定时放缓，省 CPU
 const IDLE_SLOW = 1500;   // 连续未检出后的放缓间歇 ms
+const IDLE_PEEK = 400;    // 后端判定画面没动：这一轮几乎不花钱，可以勤查
 
 let lastPayload = null;
 let pending = { key: null, n: 0 };  // 低分新结果的 2 帧确认
@@ -167,14 +168,18 @@ async function hideOverlay() {
   }
 }
 
-/// 返回 'hit' | 'miss'（供自适应循环决定节奏）
+/// 返回 'hit' | 'miss' | 'skip'（供自适应循环决定节奏）
 async function analyzeOnce(auto) {
   if (busy) return "miss";
   busy = true;
   $("btn-capture").disabled = true;
   if (!auto) setStatus("抓屏匹配中…");
   try {
-    const p = await invoke("analyze_screen");
+    // 手动点按钮时强制真抓一次：跳帧优化不该让按钮看起来像坏了
+    const p = await invoke("analyze_screen", { force: !auto });
+    // 画面没变 / 这一帧疑似拍到了叠加层自己：保持现状。
+    // 关键是**不能**收起叠加层——收一下放一下就是用户看到的闪烁。
+    if (p.status === "skip") return "skip";
     if (p.status === "no_panel") {
       // 面板整体消失 = 地图关了，立即隐藏
       pending = { key: null, n: 0 };
@@ -234,11 +239,13 @@ async function watchLoop() {
   let prevKey = null;
   while (watching) {
     const r = await analyzeOnce(true);
-    misses = r === "hit" ? 0 : misses + 1;
+    // skip 既不算命中也不算落空：画面没动，上一轮的判断依然成立
+    if (r !== "skip") misses = r === "hit" ? 0 : misses + 1;
     let idle = IDLE_FAST;
-    if (misses >= 3) idle = IDLE_SLOW;
+    if (r === "skip") idle = IDLE_PEEK;
+    else if (misses >= 3) idle = IDLE_SLOW;
     else if (r === "hit" && shownKey && shownKey === prevKey) idle = IDLE_STABLE;
-    prevKey = shownKey;
+    if (r !== "skip") prevKey = shownKey;
     await sleep(idle);
   }
 }

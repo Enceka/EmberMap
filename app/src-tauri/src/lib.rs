@@ -38,9 +38,17 @@ struct CandidateOut {
     score: f32,
 }
 
+/// 分数高到这个地步只可能是「叠加层漏进了抓屏」——手绘层与参考掩码本就同源，
+/// 会近乎完美自匹配。真地图实测 0.84-0.86，留足余量。
+const SELF_CAPTURE_GATE: f32 = 0.97;
+
 #[derive(Serialize)]
 #[serde(tag = "status")]
 enum Payload {
+    /// 本轮什么都不做：画面没变，或这一帧被判为受叠加层污染。
+    /// 与 no_panel 的区别在于**不能**收起叠加层——一收一放就是用户看到的闪烁。
+    #[serde(rename = "skip")]
+    Skip { reason: String },
     #[serde(rename = "no_panel")]
     NoPanel {
         reason: String,
@@ -151,6 +159,8 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
         }
     }
     let prior = state.tracker.lock().unwrap().prior_scale_full;
+    // 只有下面的 cfg(mobile) 分支会改它，桌面编译时看起来是多余的 mut
+    #[allow(unused_mut)]
     let mut opts = match prior {
         Some(s) => em_core::Options::track(s),
         None => em_core::Options::acquire(),
@@ -191,6 +201,15 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             })
         }
         em_core::Analysis::Matched { panel, candidates, .. } => {
+            // 自检要赶在喂跟踪器之前：污染帧的尺度先验会把后续几帧一起带偏。
+            // 跳过一帧的代价可以忽略，前端保持上一帧的叠加，用户毫无察觉。
+            if candidates.first().is_some_and(|c| c.score > SELF_CAPTURE_GATE) {
+                let c = &candidates[0];
+                eprintln!("[em] {dt:?} 丢弃疑似自拍帧：{} {} {:.3}", c.name, c.floor, c.score);
+                return Ok(Payload::Skip {
+                    reason: format!("疑似抓到叠加层自身（{:.3}）", c.score),
+                });
+            }
             let flat: Vec<(String, f32)> =
                 candidates.iter().map(|c| (c.variant.clone(), c.score)).collect();
             let mut tk = state.tracker.lock().unwrap();
@@ -206,11 +225,6 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             let (phase, evidence, advantage) = (dec.phase.to_string(), dec.evidence, dec.advantage);
             let confident = dec.variant.is_some();
             drop(tk);
-            // 自检：覆盖层本应对抓屏不可见（content_protected）。若它漏进画面，
-            // 手绘层会与参考掩码近乎完美匹配，分数异常拉高到 0.97+。
-            if best.score > 0.97 {
-                eprintln!("[em] 警告：分数 {:.3} 异常高，疑似覆盖层被抓屏捕获", best.score);
-            }
             eprintln!(
                 "[em] {dt:?} {phase} 证据={evidence:.3} 分差={advantage:.3} 面板={panel:?} \
                  先验={prior:?} | {}",
@@ -345,7 +359,8 @@ fn capture_target() -> Result<(Vec<u8>, usize, usize, i32, i32), String> {
 // 注意：重活必须放 spawn_blocking——同步命令跑在主线程上会把 UI 冻住
 #[cfg(desktop)]
 #[tauri::command]
-async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
+async fn analyze_screen(app: tauri::AppHandle, force: bool) -> Result<Payload, String> {
+    let _ = force; // 桌面端覆盖窗对抓屏不可见，无需跳帧策略
     tauri::async_runtime::spawn_blocking(move || {
         let (rgb, w, h, ox, oy) = capture_target()?;
         let mut payload = run_analysis(rgb, w, h, &app.state::<AppState>())?;
@@ -400,6 +415,13 @@ mod android_capture {
         pub capturing: bool,
     }
 
+    #[derive(Deserialize)]
+    pub struct Peek {
+        pub changed: bool,
+        /// 采样点里「明显变了」的占比，调阈值时看它
+        pub ratio: f64,
+    }
+
     pub fn request(h: &PluginHandle<tauri::Wry>) -> Result<Granted, String> {
         h.run_mobile_plugin("requestCapture", ()).map_err(|e| e.to_string())
     }
@@ -413,6 +435,9 @@ mod android_capture {
     }
     pub fn grab(h: &PluginHandle<tauri::Wry>) -> Result<Frame, String> {
         h.run_mobile_plugin("grabFrame", ()).map_err(|e| e.to_string())
+    }
+    pub fn peek(h: &PluginHandle<tauri::Wry>) -> Result<Peek, String> {
+        h.run_mobile_plugin("peekChanged", ()).map_err(|e| e.to_string())
     }
 }
 
@@ -444,9 +469,19 @@ async fn capture_active(app: tauri::AppHandle) -> Result<bool, String> {
 /// 供悬浮窗定位（Kotlin 侧按 maxLongEdge 缩过，故需除以 scale）。
 #[cfg(target_os = "android")]
 #[tauri::command]
-async fn analyze_screen(app: tauri::AppHandle) -> Result<Payload, String> {
+async fn analyze_screen(app: tauri::AppHandle, force: bool) -> Result<Payload, String> {
     let frame = {
         let h = app.state::<AndroidPlugin>().0.clone();
+        // 先廉价探一下画面动没动：取干净帧要瞬时隐藏悬浮窗，那一下用户看得见。
+        // 地图开着不动时（正是在看叠加层的时刻）没有任何重算的必要。
+        // force：用户手动点「抓屏匹配」，那就必须真的抓一次，否则按钮像坏了。
+        let peek = if force { None } else { Some(android_capture::peek(&h)?) };
+        if peek.as_ref().is_some_and(|p| !p.changed) {
+            let peek = peek.unwrap();
+            return Ok(Payload::Skip {
+                reason: format!("画面未变（差异 {:.2}%）", peek.ratio * 100.0),
+            });
+        }
         android_capture::grab(&h)?
     };
     tauri::async_runtime::spawn_blocking(move || {

@@ -64,6 +64,21 @@ class OverlayArgs {
 @TauriPlugin
 class CapturePlugin(private val activity: Activity) : Plugin(activity) {
 
+    companion object {
+        /** 画面变化采样的网格边长 */
+        private const val SIG_N = 48
+        /** 单个采样点灰度变化超过多少才算「动了」——地图界面透出的 3D 场景一直在微动 */
+        private const val SAMPLE_DELTA = 12
+        /** 变化点占比超过此值才判为画面有实质变化 */
+        private const val CHANGE_RATIO = 0.02
+        /** 连续判「没变」这么多次就强制重算一次，防阈值偏钝导致叠加层永远跟不动 */
+        private const val FORCE_REFRESH_EVERY = 12
+    }
+
+    /** 上次画面采样指纹（含悬浮窗），仅由 peekOnWorker 写 */
+    @Volatile private var lastSignature: ByteArray? = null
+    private var skipStreak = 0
+
     /** 是否已获得投屏授权（授权在停止投屏后失效，需重新申请） */
     @Command
     fun isCapturing(invoke: Invoke) {
@@ -151,6 +166,91 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
         Thread { grabOnWorker(ir, invoke) }.start()
     }
 
+    /**
+     * 画面相对上次采样有没有实质变化。
+     *
+     * 取一帧干净画面必须先把悬浮窗藏起来，藏的这一瞬间用户就看得见闪烁；
+     * 而地图开着不动时（正是用户在看叠加层的时刻）根本无需重算。
+     * 于是先用「不隐藏悬浮窗」的廉价采样探一下：没变就整轮跳过，稳态零闪烁。
+     *
+     * 采样直接读 ImageReader 的 ByteBuffer，48×48 个点，不建 Bitmap 不解码。
+     */
+    @Command
+    fun peekChanged(invoke: Invoke) {
+        val ir = CaptureService.instance?.imageReader()
+        if (ir == null) {
+            invoke.reject("尚未授权投屏")
+            return
+        }
+        Thread { peekOnWorker(ir, invoke) }.start()
+    }
+
+    private fun peekOnWorker(ir: ImageReader, invoke: Invoke) {
+        var img: android.media.Image? = null
+        try {
+            val ret = JSObject()
+            img = ir.acquireLatestImage()
+            if (img == null) {
+                // 合成器没产出新帧 = 屏幕一个像素都没动
+                ret.put("changed", false)
+                ret.put("ratio", 0.0)
+                invoke.resolve(ret)
+                return
+            }
+            val sig = signature(img)
+            val prev = lastSignature
+            lastSignature = sig
+            val ratio = if (prev == null) 1.0 else changedRatio(prev, sig)
+            // 兜底：阈值万一在某台机器上偏钝，别让叠加层从此跟不动；
+            // 隔一阵强制重算一次，代价是几十秒才闪一下
+            val forced = skipStreak >= FORCE_REFRESH_EVERY
+            val changed = prev == null || ratio > CHANGE_RATIO || forced
+            skipStreak = if (changed) 0 else skipStreak + 1
+            ret.put("changed", changed)
+            ret.put("ratio", ratio)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            Log.w("EmberMap", "画面采样失败，按「有变化」处理", e)
+            val ret = JSObject()
+            ret.put("changed", true)
+            ret.put("ratio", 1.0)
+            invoke.resolve(ret)
+        } finally {
+            try { img?.close() } catch (_: Exception) {}
+        }
+    }
+
+    /** 48×48 灰度指纹，直接按 stride 抽样，不建 Bitmap */
+    private fun signature(image: android.media.Image): ByteArray {
+        val plane = image.planes[0]
+        val buf = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val out = ByteArray(SIG_N * SIG_N)
+        for (gy in 0 until SIG_N) {
+            val y = gy * image.height / SIG_N
+            for (gx in 0 until SIG_N) {
+                val x = gx * image.width / SIG_N
+                val i = y * rowStride + x * pixelStride
+                val r = buf.get(i).toInt() and 0xFF
+                val g = buf.get(i + 1).toInt() and 0xFF
+                val b = buf.get(i + 2).toInt() and 0xFF
+                out[gy * SIG_N + gx] = ((r * 3 + g * 6 + b) / 10).toByte()
+            }
+        }
+        return out
+    }
+
+    /** 两个指纹里「明显变了」的采样点占比 */
+    private fun changedRatio(a: ByteArray, b: ByteArray): Double {
+        var n = 0
+        for (i in a.indices) {
+            val d = kotlin.math.abs((a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF))
+            if (d > SAMPLE_DELTA) n++
+        }
+        return n.toDouble() / a.size
+    }
+
     /** 内容矩形之外的边框是否近乎全黑（判定「留黑边」而非「拉伸填满」） */
     private fun bandIsBlack(bmp: Bitmap, cx: Int, cy: Int, cw: Int, ch: Int): Boolean {
         var dark = 0
@@ -208,13 +308,25 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     private fun grabOnWorker(ir: ImageReader, invoke: Invoke) {
         var image: android.media.Image? = null
         val ov = overlayView
-        var hidden = false
+        var hiddenAt = 0L
+        // 悬浮窗每藏一次用户就看到一次闪。因此只在「必须干净」的那一小段藏：
+        // 拿到原始像素就立刻恢复，后面的裁剪/缩放/JPEG 编码/写盘（合计几百毫秒）
+        // 全在自己的内存里做，与屏幕无关。
+        val restore = {
+            if (hiddenAt != 0L && ov != null) {
+                val ms = android.os.SystemClock.uptimeMillis() - hiddenAt
+                hiddenAt = 0L
+                activity.runOnUiThread { ov.visibility = View.VISIBLE }
+                if (ms > 200) Log.i("EmberMap", "悬浮窗隐藏了 ${ms}ms（越短越不闪）")
+            }
+        }
         try {
             if (ov != null && ov.visibility == View.VISIBLE) {
+                hiddenAt = android.os.SystemClock.uptimeMillis()
                 activity.runOnUiThread { ov.visibility = View.INVISIBLE }
-                hidden = true
-                // 等合成器出一帧不含悬浮窗的画面，并丢掉队列里的旧帧
-                Thread.sleep(120)
+                // 等合成器出一帧不含悬浮窗的画面，并丢掉队列里的旧帧。
+                // 60ms ≈ 3~4 个 vsync；万一没等够，识别侧有 0.97 自拍闸门兜底
+                Thread.sleep(60)
                 while (true) {
                     val stale = ir.acquireLatestImage() ?: break
                     stale.close()
@@ -225,8 +337,8 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
             var latest = ir.acquireLatestImage()
             var waited = 0
             while (latest == null && waited < 1500) {
-                Thread.sleep(30)
-                waited += 30
+                Thread.sleep(15)
+                waited += 15
                 latest = ir.acquireLatestImage()
             }
             if (latest == null) {
@@ -249,6 +361,10 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
             } else {
                 bmp
             }
+            // 像素已复制进自己的 Bitmap，投屏缓冲与屏幕都不再需要
+            image.close()
+            image = null
+            restore()
 
             // 2000 而非更低：实测缩到 1200 时多次重采样叠加 JPEG 压缩，
             // 会把识别分数压到置信门槛之下（0.73 vs 桌面 0.84）。
@@ -293,9 +409,7 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
             invoke.reject(e.message ?: "取帧失败")
         } finally {
             try { image?.close() } catch (_: Exception) {}
-            if (hidden && ov != null) {
-                activity.runOnUiThread { ov.visibility = View.VISIBLE }
-            }
+            restore()
         }
     }
 
