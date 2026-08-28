@@ -104,6 +104,65 @@ function renderGeom(p, shotW) {
     `shot=${shotW} k=${k.toFixed(3)}`;
 }
 
+// ---------------------------------------------------------------------------
+// 手动锁定：认对了就钉住变体/楼层，之后只跟这几张比。
+// 既治「主界面被认成某张地图」，也让用户能纠正楼层判错。
+// ---------------------------------------------------------------------------
+let pin = { variant: null, floor: null, name: null };
+
+function renderPin() {
+  $("sel-map").value = pin.variant || "";
+  for (const b of document.querySelectorAll("#pinbar button.floor")) {
+    b.classList.toggle("on", (b.dataset.floor || null) === pin.floor);
+  }
+  const btn = $("btn-pin");
+  btn.textContent = pin.variant ? "解除锁定" : "锁定当前";
+  btn.disabled = !pin.variant && !lastPayload;
+  const bits = [];
+  if (pin.variant) bits.push(`已锁 ${pin.name || pin.variant}`);
+  if (pin.floor) bits.push(`只看${floorCn(pin.floor)}`);
+  $("pinstate").textContent = bits.join(" · ");
+}
+
+async function applyPin(next) {
+  pin = await invoke("set_pin", next);
+  // 锁定范围变了，上一帧的结果与叠加都不再代表当前设置
+  lastPayload = null;
+  lastPushed = null;
+  shownKey = null;
+  renderPin();
+}
+
+async function initPinUi() {
+  const sel = $("sel-map");
+  let maps = [];
+  try { maps = await invoke("list_maps"); } catch (e) { setStatus(String(e), "warn"); }
+  sel.innerHTML =
+    `<option value="">自动识别地图</option>` +
+    maps.map((m) => `<option value="${m.variant}">锁定：${m.name}</option>`).join("");
+  sel.addEventListener("change", () => {
+    const v = sel.value || null;
+    applyPin({ variant: v, floor: pin.floor, name: v ? sel.selectedOptions[0].text.slice(3) : null });
+  });
+  for (const b of document.querySelectorAll("#pinbar button.floor")) {
+    b.addEventListener("click", () =>
+      applyPin({ variant: pin.variant, floor: b.dataset.floor || null, name: pin.name })
+    );
+  }
+  // 主按钮：一键钉住当前识别结果，不用自己在 13 个名字里找
+  $("btn-pin").addEventListener("click", () => {
+    if (pin.variant) return applyPin({ variant: null, floor: pin.floor, name: null });
+    if (!lastPayload) return;
+    return applyPin({
+      variant: lastPayload.variant,
+      floor: pin.floor,
+      name: lastPayload.name,
+    });
+  });
+  try { pin = await invoke("get_pin"); } catch { /* 旧版后端 */ }
+  renderPin();
+}
+
 function renderCandidates(list) {
   $("candidates").innerHTML = list
     .map((c, i) => `<li class="${i === 0 ? "best" : ""}">${i + 1}. ${c.name} · ${floorCn(c.floor)}　${c.score.toFixed(3)}</li>`)
@@ -209,7 +268,8 @@ async function analyzeOnce(auto) {
     lowConfMiss = 0;
     shownKey = key;
     lastPayload = p;
-    const tag = p.phase === "tracking" ? "跟踪" : "已锁定";
+    renderPin(); // 有结果了，「锁定当前」才可点
+    const tag = { tracking: "跟踪", pinned: "手动锁定" }[p.phase] || "已锁定";
     setStatus(
       `${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}　` +
       `领先次佳 ${p.advantage.toFixed(3)}　${tag}`,
@@ -297,6 +357,8 @@ listen("hotkey", async (ev) => {
 (async () => {
   let caps = { screen_capture: true, overlay: true, needs_capture_permission: false };
   try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
+
+  await initPinUi();
 
   if (caps.needs_capture_permission) {
     // Android：悬浮窗由系统权限管控，勾选时按需申请

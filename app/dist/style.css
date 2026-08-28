@@ -26,6 +26,18 @@ header {
 #controls button:disabled { background: #45505f; }
 #controls label { display: flex; gap: 4px; align-items: center; }
 #rng-alpha { width: 90px; }
+#pinbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
+#sel-map {
+  background: #232b36; color: #dde3ea; border: 1px solid #3a4553;
+  border-radius: 6px; padding: 5px 8px; font-size: 13px; max-width: 190px;
+}
+#floorbar { display: flex; gap: 4px; align-items: center; color: #8b96a3; }
+#pinbar button.floor {
+  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
+  border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+}
+#pinbar button.floor.on { background: #2d7ff9; color: #fff; border-color: #2d7ff9; }
+#pinstate { color: #e3b341; font-size: 12px; }
 #hint { margin-top: 6px; font-size: 12px; color: #6f7b88; }
 main {
   flex: 1;

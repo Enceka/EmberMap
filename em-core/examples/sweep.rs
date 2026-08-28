@@ -42,7 +42,7 @@ fn main() {
         println!("\n=== {path}  真值 {want_name} {want_floor}");
         for (label, opt) in &configs {
             let t = Instant::now();
-            let res = em_core::analyze_with(im.as_raw(), w, h, &lib, None, opt);
+            let res = em_core::analyze_with(im.as_raw(), w, h, &lib, em_core::Pin::default(), opt);
             let dt = t.elapsed();
             match res {
                 Analysis::NoPanel { reason } => println!("  {label:32} 无面板：{reason}"),

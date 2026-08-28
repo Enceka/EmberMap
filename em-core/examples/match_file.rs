@@ -20,8 +20,23 @@ fn main() {
         overlay_dir = Some(args.remove(i + 1));
         args.remove(i);
     }
+    // --pin 变体id:楼层（任一段可留空），对应界面上的「手动锁定」
+    let mut pin_arg = String::new();
+    if let Some(i) = args.iter().position(|a| a == "--pin") {
+        if i + 1 >= args.len() {
+            eprintln!("--pin 需要 变体id:楼层");
+            std::process::exit(1);
+        }
+        pin_arg = args.remove(i + 1);
+        args.remove(i);
+    }
+    let (pv, pf) = pin_arg.split_once(':').unwrap_or((pin_arg.as_str(), ""));
+    let pin = em_core::Pin {
+        variant: (!pv.is_empty()).then_some(pv),
+        floor: (!pf.is_empty()).then_some(pf),
+    };
     if args.len() < 2 {
-        eprintln!("用法: match_file [--overlay 输出目录] <bundle目录> <截图...>");
+        eprintln!("用法: match_file [--overlay 输出目录] [--pin 变体:楼层] <bundle目录> <截图...>");
         std::process::exit(1);
     }
     let t0 = Instant::now();
@@ -32,7 +47,7 @@ fn main() {
         let im = image::open(path).expect("读图失败").to_rgb8();
         let (w, h) = (im.width() as usize, im.height() as usize);
         let t = Instant::now();
-        let res = em_core::analyze(im.as_raw(), w, h, &lib);
+        let res = em_core::analyze_with(im.as_raw(), w, h, &lib, pin, &em_core::Options::acquire());
         println!("\n== {path}  {w}×{h}  耗时 {:?}", t.elapsed());
         match res {
             em_core::Analysis::NoPanel { reason } => println!("  {reason}"),

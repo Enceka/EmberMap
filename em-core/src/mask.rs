@@ -5,7 +5,7 @@ use crate::img::{self, Gray, HsvRange};
 /// 判定为地图所需的最低房间像素占比（百分比）。
 /// 实测：真地图 23%，半透明界面透出的 3D 场景 0.0-0.2%。
 /// 取 4% 是为了给「开局只探索到一段走廊、房间刚露一角」留余量。
-const MIN_ROOM_PERCENT: usize = 4;
+pub const MIN_ROOM_PERCENT: usize = 4;
 
 /// 游戏内地图渲染的 HSV 区间（OpenCV H∈[0,180]），与 emlib.GAME_* 一致。
 pub const GAME_RANGES: [HsvRange; 2] = [

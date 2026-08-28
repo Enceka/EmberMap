@@ -22,6 +22,20 @@ struct AppState {
     last_frame: Mutex<(usize, usize)>,
     /// 数据包目录：发行版取应用资源目录，开发期取源码树 app/bundle
     bundle_dir: Mutex<PathBuf>,
+    /// 用户手动锁定的变体/楼层。锁定后只跟这些参考比对，
+    /// 主界面之类的画面就不可能再被认成别的地图，顺带快十几倍。
+    pin: Mutex<PinState>,
+}
+
+/// 手动锁定状态。两项都为 None = 全自动。
+#[derive(Default, Clone, Serialize, serde::Deserialize)]
+struct PinState {
+    /// 变体 id（bundle.json 里的 gm-xxxx），None = 自动判定
+    variant: Option<String>,
+    /// 楼层 id（b1 / 1f / 2f），None = 自动判定
+    floor: Option<String>,
+    /// 变体的中文名，仅供界面回显
+    name: Option<String>,
 }
 
 #[derive(Serialize, serde::Deserialize)]
@@ -33,6 +47,7 @@ struct DoorOut {
 
 #[derive(Serialize)]
 struct CandidateOut {
+    variant: String,
     name: String,
     floor: String,
     score: f32,
@@ -68,6 +83,8 @@ enum Payload {
         evidence_need: f32,
         /// 本帧与次佳变体的分差：越大越可信（姊妹变体常只差 0.03）
         advantage: f32,
+        /// 变体 id，前端「锁定」按钮据此下钉
+        variant: String,
         name: String,
         floor: String,
         score: f32,
@@ -186,8 +203,13 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             frame_png: thumbnail(&rgb, w, h, 720)?,
         });
     }
+    let pin_state = state.pin.lock().unwrap().clone();
+    let pin = em_core::Pin {
+        variant: pin_state.variant.as_deref(),
+        floor: pin_state.floor.as_deref(),
+    };
     let t0 = std::time::Instant::now();
-    let analysis = em_core::analyze_with(&rgb, w, h, lib, None, &opts);
+    let analysis = em_core::analyze_with(&rgb, w, h, lib, pin, &opts);
     let dt = t0.elapsed();
     match analysis {
         em_core::Analysis::NoPanel { reason } => {
@@ -210,21 +232,45 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                     reason: format!("疑似抓到叠加层自身（{:.3}）", c.score),
                 });
             }
-            let flat: Vec<(String, f32)> =
-                candidates.iter().map(|c| (c.variant.clone(), c.score)).collect();
-            let mut tk = state.tracker.lock().unwrap();
-            let dec = tk.update(&flat, em_core::CONFIDENCE_GATE);
-            // 采纳变体的最佳楼层；未采纳时用本帧第一名（仅供参考显示）
-            let best = match &dec.variant {
-                Some(v) => candidates.iter().find(|c| &c.variant == v).unwrap(),
-                None => &candidates[0],
+            // 钉了变体就绕开投票/粘滞：候选里只剩这一个变体，「与次佳变体比分差」
+            // 无从谈起，多帧印证也没有意义——用户已经替它作了保。
+            let (best_i, confident, phase, evidence, advantage) = if pin_state.variant.is_some() {
+                let ok = candidates[0].score >= em_core::CONFIDENCE_GATE;
+                let mut tk = state.tracker.lock().unwrap();
+                tk.prior_scale_full = ok.then_some(candidates[0].scale_full);
+                (0usize, ok, "pinned".to_string(), 0.0, 0.0)
+            } else {
+                let flat: Vec<(String, f32)> =
+                    candidates.iter().map(|c| (c.variant.clone(), c.score)).collect();
+                let mut tk = state.tracker.lock().unwrap();
+                let dec = tk.update(&flat, em_core::CONFIDENCE_GATE);
+                // 采纳变体的最佳楼层；未采纳时用本帧第一名（仅供参考显示）
+                let i = match &dec.variant {
+                    Some(v) => candidates.iter().position(|c| &c.variant == v).unwrap(),
+                    None => 0,
+                };
+                if dec.variant.is_some() {
+                    tk.prior_scale_full = Some(candidates[i].scale_full);
+                }
+                (i, dec.variant.is_some(), dec.phase.to_string(), dec.evidence, dec.advantage)
             };
-            if dec.variant.is_some() {
-                tk.prior_scale_full = Some(best.scale_full);
+            let best = &candidates[best_i];
+            // 一帧对全库毫无判别力时（13 个变体挤在 0.806-0.810 里，实测就是这样），
+            // 报出「当前最像 XX 0.81」在用户看来就是认错了地图。这种帧本来也锁不了
+            // （tracker 要求 MIN_FRAME_ADVANTAGE），如实说没认出来更好。
+            if !confident
+                && pin_state.variant.is_none()
+                && advantage < tracker::MIN_FRAME_ADVANTAGE
+            {
+                eprintln!("[em] {dt:?} 本帧无判别力（分差 {advantage:.3}），按无地图处理");
+                state.tracker.lock().unwrap().on_no_panel();
+                return Ok(Payload::NoPanel {
+                    reason: format!("画面里没有能分辨出来的地图（各变体分差仅 {advantage:.3}）"),
+                    frame_w: w,
+                    frame_h: h,
+                    frame_png: thumbnail(&rgb, w, h, 720)?,
+                });
             }
-            let (phase, evidence, advantage) = (dec.phase.to_string(), dec.evidence, dec.advantage);
-            let confident = dec.variant.is_some();
-            drop(tk);
             eprintln!(
                 "[em] {dt:?} {phase} 证据={evidence:.3} 分差={advantage:.3} 面板={panel:?} \
                  先验={prior:?} | {}",
@@ -271,13 +317,19 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 evidence,
                 evidence_need: tracker::LOCK_ADVANTAGE,
                 advantage,
+                variant: entry.variant.clone(),
                 name: entry.name.clone(),
                 floor: entry.floor.clone(),
                 score: best.score,
                 candidates: candidates
                     .iter()
                     .take(3)
-                    .map(|c| CandidateOut { name: c.name.clone(), floor: c.floor.clone(), score: c.score })
+                    .map(|c| CandidateOut {
+                        variant: c.variant.clone(),
+                        name: c.name.clone(),
+                        floor: c.floor.clone(),
+                        score: c.score,
+                    })
                     .collect(),
                 shot_png: png_b64(&crop, pw as u32, ph as u32)?,
                 draw_png,
@@ -609,6 +661,45 @@ fn reset_lock(state: State<AppState>) {
     state.tracker.lock().unwrap().reset();
 }
 
+/// 手动锁定变体/楼层。传 null 即解除对应那一项。
+///
+/// 锁定后匹配只在这个范围里做：主界面之类的画面不可能再被认成别的地图，
+/// 而且候选从 39 条降到 3 条（或 1 条），单帧耗时也随之下来。
+#[tauri::command]
+fn set_pin(
+    state: State<AppState>,
+    variant: Option<String>,
+    floor: Option<String>,
+    name: Option<String>,
+) -> PinState {
+    let p = PinState { variant, floor, name };
+    eprintln!("[em] 手动锁定：变体={:?} 楼层={:?}", p.variant, p.floor);
+    // 范围变了，旧的投票与尺度先验都不再适用
+    state.tracker.lock().unwrap().reset();
+    *state.pin.lock().unwrap() = p.clone();
+    p
+}
+
+#[tauri::command]
+fn get_pin(state: State<AppState>) -> PinState {
+    state.pin.lock().unwrap().clone()
+}
+
+/// 参考库里的全部变体与楼层，供界面做手动选择
+#[tauri::command]
+fn list_maps(state: State<AppState>) -> Result<serde_json::Value, String> {
+    ensure_lib(&state)?;
+    let g = state.lib.lock().unwrap();
+    let lib = g.as_ref().unwrap();
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for e in &lib.entries {
+        if !out.iter().any(|v| v["variant"] == e.variant.as_str()) {
+            out.push(serde_json::json!({ "variant": e.variant, "name": e.name }));
+        }
+    }
+    Ok(serde_json::json!(out))
+}
+
 /// 覆盖窗口：透明/无边框/置顶/点击穿透/防捕获，按面板物理像素坐标摆放。
 /// content_protected 使其对抓屏不可见，持续监测不会被自己的叠加污染。
 #[cfg(desktop)]
@@ -731,6 +822,7 @@ pub fn run() {
             tracker: Mutex::new(tracker::Tracker::default()),
             last_frame: Mutex::new((0, 0)),
             bundle_dir: Mutex::new(PathBuf::new()),
+            pin: Mutex::new(PinState::default()),
         })
         .setup(|app| {
             let dir = resolve_bundle_dir(app.handle());
@@ -755,6 +847,9 @@ pub fn run() {
         analyze_screen,
         analyze_file,
         reset_lock,
+        set_pin,
+        get_pin,
+        list_maps,
         capabilities,
         overlay_update,
         overlay_hide
@@ -785,6 +880,9 @@ pub fn run() {
             analyze_screen,
             analyze_file,
             reset_lock,
+            set_pin,
+            get_pin,
+            list_maps,
             capabilities,
             request_capture,
             stop_capture,

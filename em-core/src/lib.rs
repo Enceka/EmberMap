@@ -138,6 +138,27 @@ impl Options {
     }
 }
 
+/// 低于此分就直接报「没有地图」，而不是报出一个 0.6 的候选名——
+/// 在游戏主界面上，「当前最像 XX 0.62」看着就像认错了。
+///
+/// 必须小于 CONFIDENCE_GATE：这样它只可能改变提示文案，
+/// 不可能压掉一次本来能成立的锁定。真地图实测 ≥0.84，界面/场景误检 ≤0.75。
+pub const NOT_A_MAP: f32 = 0.76;
+
+/// 匹配范围限定。用户手动锁定后只跟这些参考比：
+/// 既快十几倍，也让主界面之类的画面不可能再被认成别的地图。
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Pin<'a> {
+    pub variant: Option<&'a str>,
+    pub floor: Option<&'a str>,
+}
+
+impl Pin<'_> {
+    pub fn is_set(&self) -> bool {
+        self.variant.is_some() || self.floor.is_some()
+    }
+}
+
 /// 首选候选达到此分即直接采信，不再探测其余候选
 const PROBE_TRUST: f32 = 0.75;
 
@@ -185,10 +206,10 @@ fn probe_best_candidate(
 
 /// 分析一帧截图（RGB8 交错），默认 acquire 质量、全库。
 pub fn analyze(rgb: &[u8], w: usize, h: usize, lib: &Library) -> Analysis {
-    analyze_with(rgb, w, h, lib, None, &Options::acquire())
+    analyze_with(rgb, w, h, lib, Pin::default(), &Options::acquire())
 }
 
-/// only：只匹配该变体的楼层（13× 提速，须配合周期性全库审计）。
+/// pin：把匹配范围收窄到指定变体/楼层（用户手动锁定时用）。
 /// 截图先整数倍盒式降采样到 opt.target_long_edge 附近；
 /// 返回的 panel 与 transform 均换算回全分辨率坐标。
 pub fn analyze_with(
@@ -196,7 +217,7 @@ pub fn analyze_with(
     w: usize,
     h: usize,
     lib: &Library,
-    only: Option<&str>,
+    pin: Pin,
     opt: &Options,
 ) -> Analysis {
     let f = (w.max(h) as f64 / opt.target_long_edge).round().max(1.0) as usize;
@@ -242,6 +263,9 @@ pub fn analyze_with(
     let g = ((fw.max(fh) as f64 / 900.0).round() as usize).max(1);
     let (pc, cw, ch) = img::crop_downscale_rgb(rgb, w, fx, fy, fw, fh, g);
     let g2 = g * g;
+    // 这里不再复核房间占比。看似合理，实测会误杀：游戏地图缩到最小时
+    // 整张图只剩走廊色，棕色房间一个像素都不剩（实测 75446 px 的面板里只有 9 px），
+    // 而这恰恰是最需要本工具的场景。房间占比只用在第一段挑候选团时。
     let (q, _) = mask::structure_mask_parts(&pc, cw, ch, (400 / g2).max(100));
     if q.count_nonzero() < (5000 / g2).max(1000) {
         return Analysis::NoPanel { reason: "地图区域太小".into() };
@@ -250,9 +274,14 @@ pub fn analyze_with(
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| only.is_none_or(|v| e.variant == v))
+        .filter(|(_, e)| {
+            pin.variant.is_none_or(|v| e.variant == v) && pin.floor.is_none_or(|f| e.floor == f)
+        })
         .map(|(i, _)| i)
         .collect();
+    if sel.is_empty() {
+        return Analysis::NoPanel { reason: "锁定的地图/楼层不在参考库里".into() };
+    }
     let masks: Vec<&img::Gray> = sel.iter().map(|&i| &lib.entries[i].mask).collect();
     // 先验是全分辨率尺度，换算到面板裁剪坐标系（该坐标系比全分辨率小 g 倍）
     let mopts = matcher::MatchOpts {
@@ -280,6 +309,18 @@ pub fn analyze_with(
             }
         })
         .collect();
+    // 分数低到这个地步，「最像的是某某地图」这句话本身就是误导——直接说没有地图。
+    // 手动锁定时不设这道闸：范围是用户自己指定的，分数低就低，如实报出来。
+    if let Some(c) = candidates.first().filter(|c| c.score < NOT_A_MAP) {
+        return Analysis::NoPanel {
+            reason: if pin.is_set() {
+                // 锁定时候选就这几张，说「不像地图」会误导——真正的问题是选错了范围
+                format!("画面与锁定的范围对不上（{} {} 仅 {:.2}）", c.name, c.floor, c.score)
+            } else {
+                format!("检测到的区域不像地图（最像 {} {:.2}）", c.name, c.score)
+            },
+        };
+    }
     let confident = candidates.first().is_some_and(|c| c.score >= CONFIDENCE_GATE);
     let panel = [fx, fy, fw, fh];
     Analysis::Matched { panel, confident, candidates }
