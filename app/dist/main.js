@@ -396,8 +396,9 @@ $("chk-overlay").addEventListener("change", async (ev) => {
 });
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
 $("rng-alpha").addEventListener("input", () => {
+  $("alpha-val").textContent = `${$("rng-alpha").value}%`;
   if (lastPayload && !viewFloor) render(lastPayload);
-  pushOverlay(false); // alpha 变化会改变指纹，自动重推
+  pushOverlay(false); // 不透明度变化会改变指纹，自动重推
 });
 listen("overlay-ready", () => pushOverlay(true));
 

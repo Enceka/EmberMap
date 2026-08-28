@@ -18,7 +18,11 @@
       <label><input type="checkbox" id="chk-watch" checked /> 自动监测</label>
       <label><input type="checkbox" id="chk-overlay" checked /> 覆盖模式</label>
       <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
-      <label>叠加 <input type="range" id="rng-alpha" min="0" max="100" value="75" /></label>
+      <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
+      <label>叠加层不透明度
+        <input type="range" id="rng-alpha" min="10" max="100" value="45" />
+        <span id="alpha-val">45%</span>
+      </label>
     </div>
     <!-- 手动锁定：认对了就钉住，之后只跟这张图比，主界面等画面不会再被误判 -->
     <div id="pinbar">

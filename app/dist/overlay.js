@@ -25,7 +25,7 @@ async function render(p) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const d = id.data;
-  const alpha = p.alpha ?? 0.75;
+  const alpha = p.alpha ?? 0.45;
   for (let i = 0; i < d.length; i += 4) {
     const luma = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
     d[i + 3] = Math.min(255, (luma * 255) / 70) * alpha;

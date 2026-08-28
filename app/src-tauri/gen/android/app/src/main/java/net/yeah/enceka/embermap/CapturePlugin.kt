@@ -48,7 +48,7 @@ class OverlayArgs {
     var y: Int = 0
     var w: Int = 0
     var h: Int = 0
-    var alpha: Double = 0.75
+    var alpha: Double = 0.45
     var doors: List<DoorArg> = emptyList()
 }
 
