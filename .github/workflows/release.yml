@@ -4,7 +4,8 @@ name: Release
 #   打 tag v*   → 正式版，Release 名 EmberMap v0.1.0
 #   推 main     → 测试版，滚动覆盖 nightly 这一个预发布（旧的先删再传）
 #   手动 dispatch → 测试版，用填入的 tag 名，标为预发布
-# 三条都是：四个平台先传进同一个草稿 Release，全部成功后 publish job 转正式。
+# 三条都是：三个桌面平台加 Android 先传进同一个草稿 Release，
+# 全部成功后 publish job 转正式。macOS 只出 arm64，不再做 Intel 包。
 on:
   push:
     branches: [main]
@@ -82,12 +83,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest      # Apple Silicon
+          - platform: macos-latest      # 仅 Apple Silicon，不再出 Intel 包
             target: aarch64-apple-darwin
             label: macos-arm64
-          - platform: macos-13          # Intel
-            target: x86_64-apple-darwin
-            label: macos-x64
           - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             label: linux-x64
@@ -145,15 +143,16 @@ jobs:
 
             第五人格加页手记地图识别辅助（噩梦难度）。
 
-            **平台包**：macOS 用 `.dmg`（Apple Silicon 选 arm64、Intel 选 x64），
-            Windows 用 `-setup.exe`，Linux 用 `.AppImage` 或 `.deb`。
+            **平台包**：macOS 用 `.dmg`（仅 Apple Silicon），Windows 用 `-setup.exe`，
+            Linux 用 `.AppImage` 或 `.deb`，Android 用 `.apk`（7.0+，arm64 与 x86_64 通用包）。
 
             **首次运行需授权屏幕录制**：
             - macOS：系统设置 → 隐私与安全性 → 屏幕录制 → 勾选 EmberMap，然后重启应用。
             - Windows / Linux：无需额外授权。
+            - Android：识别核心可用，但投屏取帧与悬浮窗尚未接通，目前只能选图分析。
 
             **未签名说明**：macOS 首次打开请右键 → 打开；Windows 可能出现
-            SmartScreen 提示，选「更多信息 → 仍要运行」。
+            SmartScreen 提示，选「更多信息 → 仍要运行」；Android 需允许「安装未知来源应用」。
 
             **热键**：⇧⌥M 切换覆盖层，⇧⌥R 重新识别。
 
@@ -163,14 +162,115 @@ jobs:
           prerelease: ${{ needs.meta.outputs.prerelease }}
           args: --target ${{ matrix.target }}
 
-  # 四个平台先各自上传到同一个草稿 Release（草稿期间外部看不到，
-  # 避免只传完 macOS 就被人下到半份产物），全部成功后再一次性转正式。
+  # Android 走 cargo tauri android build，产物不经 tauri-action，
+  # 先存成 workflow artifact，由 publish job 统一传进 Release
+  # （此时草稿必然已由桌面矩阵创建，不必跟它抢着建）。
+  android:
+    name: 构建 Android APK
+    needs: meta
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17" # AGP 8.11 要求 JDK 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          key: android
+
+      # rust-cache 会缓存 ~/.cargo/bin，首次约 3 分钟，之后命中缓存
+      - name: 安装 tauri-cli
+        run: cargo install tauri-cli --locked --version "^2"
+
+      - name: 构建 APK（arm64-v8a + x86_64）
+        working-directory: app
+        run: |
+          set -euo pipefail
+          # 用 runner 自带的 NDK，不额外下载；镜像里变量名变过，留个兜底
+          ndk="${ANDROID_NDK_LATEST_HOME:-}"
+          if [ -z "$ndk" ]; then
+            ndk=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -1)
+          fi
+          test -n "$ndk" || { echo "runner 上找不到 NDK"; exit 1; }
+          echo "NDK：$ndk"
+          export NDK_HOME="$ndk"
+          cargo tauri android build --target aarch64 --target x86_64 --apk
+
+      # tauri 出的 release APK 是未签名的，装不上，必须在这里补签。
+      # 配了 secret 就用正式密钥；没配则临时生成一把，保证至少能装。
+      - name: 签名 APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # 用 -print -quit 而不是 | head -1：pipefail 下 head 提前退出会让
+          # find 收到 SIGPIPE，整步随机失败
+          apk=$(find app/src-tauri/gen/android/app/build/outputs/apk \
+                  -name '*-release-unsigned.apk' -print -quit)
+          test -n "$apk" || { echo "没找到未签名 APK"; exit 1; }
+          echo "未签名产物：$apk"
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > /tmp/em.jks
+            storepass="$KEYSTORE_PASSWORD"; keypass="$KEY_PASSWORD"; alias="$KEY_ALIAS"
+            echo "用仓库 secret 中的正式签名密钥"
+          else
+            storepass=embermap; keypass=embermap; alias=embermap
+            keytool -genkeypair -keystore /tmp/em.jks -storepass "$storepass" \
+              -keypass "$keypass" -alias "$alias" -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=EmberMap CI"
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，本次用一次性密钥签名；每次构建密钥都不同，装新版前需先卸载旧版"
+          fi
+
+          "${tools}zipalign" -p -f 4 "$apk" /tmp/aligned.apk
+          "${tools}apksigner" sign --ks /tmp/em.jks --ks-pass "pass:$storepass" \
+            --key-pass "pass:$keypass" --ks-key-alias "$alias" \
+            --out "EmberMap_${TAG}_android.apk" /tmp/aligned.apk
+          "${tools}apksigner" verify --print-certs "EmberMap_${TAG}_android.apk"
+          ls -lh "EmberMap_${TAG}_android.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: EmberMap_*_android.apk
+          if-no-files-found: error
+
+  # 三个桌面平台各自上传到同一个草稿 Release（草稿期间外部看不到，
+  # 避免只传完 macOS 就被人下到半份产物），加上 Android 的 APK，
+  # 全部成功后再一次性转正式。
   # 任一平台失败则此 job 跳过，Release 留作草稿，可修完重跑。
   publish:
     name: 发布 Release
-    needs: [meta, build]
+    needs: [meta, build, android]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+
+      - name: APK 传进草稿 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          gh release upload "$TAG" EmberMap_*_android.apk \
+            --clobber --repo "$GITHUB_REPOSITORY"
+
       - name: 草稿转正式
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
