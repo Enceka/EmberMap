@@ -13,6 +13,11 @@ const IDLE_FAST = 300;    // 地图刚出现/结果变化时的轮询间歇 ms
 const IDLE_STABLE = 800;  // 结果稳定时放缓，省 CPU
 const IDLE_SLOW = 1500;   // 连续未检出后的放缓间歇 ms
 const IDLE_PEEK = 400;    // 后端判定画面没动：这一轮几乎不花钱，可以勤查
+// 叠加层保活时限：这么久没拿到「有效」的一轮就强制收起。
+// 兜底而非主路径——正常路径是 no_panel 立即收、连续两帧不置信收。
+// 有它才能保证「叠加层赖在屏幕上不走」这类问题不可能发生，
+// 不管后端将来因为什么原因不再给出结果。
+const OVERLAY_TTL = 6000;
 
 let lastPayload = null;
 let pending = { key: null, n: 0 };  // 低分新结果的 2 帧确认
@@ -26,6 +31,7 @@ let lastPushed = null;     // 上次推给覆盖层的指纹，避免重复推�
 let androidOverlay = false; // Android 悬浮窗由 Kotlin 绘制，参数形状与桌面不同
 let capturing = false;      // Android 投屏是否在进行（授权可被用户随时撤销）
 let captureStopped = null;  // Android：投屏中止时的收尾（由平台分支注入）
+let overlayGoodAt = 0;      // 上次确认叠加层仍然有效的时刻，供保活时限判定
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const floorCn = (f) => ({ "1f": "一楼", "2f": "二楼", b1: "地下室" }[f] || f);
@@ -260,10 +266,14 @@ function fingerprint(p) {
 async function pushOverlay(force) {
   if (!overlayMode || !lastPayload) return;
   const fp = fingerprint(lastPayload);
+  // 走到这里就说明本轮拿到了可信结果，保活时限要续上——哪怕几何没变、
+  // 下面因去重直接返回也一样，否则稳态叠加反倒会被兜底逻辑每 5 秒收一次
+  overlayGoodAt = Date.now();
   if (!force && overlayVisible && fp === lastPushed) return;
   try {
     await invoke("overlay_update", overlayArgs(lastPayload));
     overlayVisible = true;
+    overlayGoodAt = Date.now();
     lastPushed = fp;
   } catch (e) {
     setStatus(String(e), "warn");
@@ -287,9 +297,14 @@ async function analyzeOnce(auto) {
   try {
     // 手动点按钮时强制真抓一次：跳帧优化不该让按钮看起来像坏了
     const p = await invoke("analyze_screen", { force: !auto });
-    // 画面没变 / 这一帧疑似拍到了叠加层自己：保持现状。
-    // 关键是**不能**收起叠加层——收一下放一下就是用户看到的闪烁。
-    if (p.status === "skip") return "skip";
+    // 本轮不出结果，不移动叠加层。hold=true 表示画面逐像素没变，
+    // 那上一帧的叠加仍然成立，可以续上保活时限；hold=false 是「没能验证」，
+    // 不能拿来续命，否则叠加层会永远赖在屏幕上（关掉地图也不消失）。
+    if (p.status === "skip") {
+      if (p.hold) overlayGoodAt = Date.now();
+      else if (!viewFloor) setStatus(p.reason, "warn"); // 说清楚为什么这一轮没结果
+      return "skip";
+    }
     if (p.status === "no_panel") {
       // 面板整体消失 = 地图关了，立即隐藏
       pending = { key: null, n: 0 };
@@ -365,6 +380,12 @@ async function watchLoop() {
     else if (misses >= 3) idle = IDLE_SLOW;
     else if (r === "hit" && shownKey && shownKey === prevKey) idle = IDLE_STABLE;
     if (r !== "skip") prevKey = shownKey;
+    // 保活兜底：太久没确认过叠加层仍然有效就收起来。
+    // 上一版把「无法验证」的帧也当成保持，结果地图关了叠加层还赖在屏幕上。
+    if (overlayVisible && Date.now() - overlayGoodAt > OVERLAY_TTL) {
+      console.warn("[em] 叠加层超过保活时限未获确认，收起");
+      await hideOverlay();
+    }
     await sleep(idle);
   }
 }
@@ -376,12 +397,14 @@ $("btn-reset").addEventListener("click", async () => {
   pending = { key: null, n: 0 };
   setStatus("已清除锁定，下次匹配全库重扫");
 });
-$("chk-watch").addEventListener("change", (ev) => {
+$("chk-watch").addEventListener("change", async (ev) => {
   watching = ev.target.checked;
   if (watching) {
     setStatus("自动监测中——打开游戏内地图即自动识别");
     watchLoop();
   } else {
+    // 停了监测就没人再更新叠加层了，留着只会是一张停在错位置的旧图
+    await hideOverlay();
     setStatus("已停止自动监测");
   }
 });

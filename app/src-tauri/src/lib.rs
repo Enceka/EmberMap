@@ -94,10 +94,16 @@ const SELF_CAPTURE_GATE: f32 = 0.97;
 #[derive(Serialize)]
 #[serde(tag = "status")]
 enum Payload {
-    /// 本轮什么都不做：画面没变，或这一帧被判为受叠加层污染。
-    /// 与 no_panel 的区别在于**不能**收起叠加层——一收一放就是用户看到的闪烁。
+    /// 本轮不出结果。**不移动**叠加层——一动一动正是用户看到的跳。
+    ///
+    /// hold 决定它算不算「叠加层仍然有效」的凭据，这个区分是必须的：
+    /// - true：画面与上一帧逐像素没变（Android 廉价采样），那上一帧的叠加当然还成立，
+    ///   可以无限期保持，稳态零闪烁全靠它。
+    /// - false：这一帧没能验证（疑似拍到叠加层自己）。不能拿它当凭据——
+    ///   否则一旦持续出现，叠加层就会永远赖在屏幕上，地图早关了也不消失。
+    ///   前端据此让保活计时继续走，超时就收起来。
     #[serde(rename = "skip")]
-    Skip { reason: String },
+    Skip { reason: String, hold: bool },
     #[serde(rename = "no_panel")]
     NoPanel {
         reason: String,
@@ -262,9 +268,14 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             // 跳过一帧的代价可以忽略，前端保持上一帧的叠加，用户毫无察觉。
             if candidates.first().is_some_and(|c| c.score > SELF_CAPTURE_GATE) {
                 let c = &candidates[0];
-                eprintln!("[em] {dt:?} 丢弃疑似自拍帧：{} {} {:.3}", c.name, c.floor, c.score);
+                eprintln!(
+                    "[em] {dt:?} 警告：分数 {:.3} 异常高，疑似把叠加层自己拍了进来（{} {}）。\
+                     丢弃该帧；若持续出现，前端会按保活超时收起叠加层",
+                    c.score, c.name, c.floor
+                );
                 return Ok(Payload::Skip {
                     reason: format!("疑似抓到叠加层自身（{:.3}）", c.score),
+                    hold: false,
                 });
             }
             // 钉了变体就绕开投票/粘滞：候选里只剩这一个变体，「与次佳变体比分差」
@@ -287,18 +298,21 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 if dec.variant.is_some() {
                     tk.prior_scale_full = Some(candidates[i].scale_full);
                 }
+                // 粘滞缓冲帧：变体还报得出，但分数已掉出门槛、几何不可信。
+                // 降为「不置信」而不是 Skip——不置信只是不移动叠加层，
+                // 同时照常计入丢失，连续两帧就收起来。若在这里 Skip，
+                // 地图关掉后叠加层会一直赖在屏幕上（上一版正是这么错的）。
                 if dec.stale {
-                    // 粘滞维持显示，但本帧几何不可信：保持上一帧的叠加不动。
-                    // 用它去摆覆盖窗，就是「关掉地图后叠加层跳几下」的第一个来源。
-                    eprintln!("[em] {dt:?} 分数掉出门槛，保持上一帧叠加（分差 {:.3}）", dec.advantage);
-                    return Ok(Payload::Skip { reason: "本帧几何不可信，保持上一帧叠加".into() });
+                    eprintln!("[em] {dt:?} 分数掉出门槛，本帧几何不可信，按未识别处理");
                 }
-                (i, dec.variant.is_some(), dec.phase.to_string(), dec.evidence, dec.advantage)
+                let ok = dec.variant.is_some() && !dec.stale;
+                (i, ok, dec.phase.to_string(), dec.evidence, dec.advantage)
             };
             let best = &candidates[best_i];
             // 几何连续性：面板不会瞬移。与上次采信的面板交叠太少就先不动叠加层，
             // 连续两帧都对不上才承认地图真挪了这么远。地图关闭那一两帧的误检
             // 往往落在画面别处，正是这道闸要拦的。
+            let mut confident = confident;
             {
                 let mut gg = state.geom.lock().unwrap();
                 if !confident {
@@ -309,15 +323,16 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                         gg.rejects += 1;
                         eprintln!(
                             "[em] {dt:?} 面板从 {prev:?} 跳到 {panel:?}（交叠 {ov}%），\
-                             保持上一帧叠加（第 {} 次）",
+                             本帧按未识别处理（第 {} 次）",
                             gg.rejects
                         );
-                        return Ok(Payload::Skip {
-                            reason: format!("面板位置突变（交叠 {ov}%），保持上一帧叠加"),
-                        });
+                        // 同 stale：降为不置信而非 Skip。不移动叠加层，但照常计入丢失，
+                        // 免得误检持续时叠加层永远收不起来。
+                        confident = false;
+                    } else {
+                        gg.rejects = 0;
+                        gg.panel = Some(panel);
                     }
-                    gg.rejects = 0;
-                    gg.panel = Some(panel);
                 } else {
                     gg.panel = Some(panel);
                 }
@@ -462,6 +477,10 @@ fn capture_target() -> Result<(Vec<u8>, usize, usize, i32, i32), String> {
             }
         }
     }
+    // 找不到游戏窗口只能退回抓主屏。抓窗口时叠加层不可能进画面（CGWindowList
+    // 只合成那一个窗口）；抓主屏就全指望 content_protected 把它挡在外面了，
+    // 一旦挡不住就会自己识别自己，故单独记一笔便于排障。
+    eprintln!("[em] 未找到游戏窗口，退回抓主屏");
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = monitors
         .iter()
@@ -599,6 +618,8 @@ async fn analyze_screen(app: tauri::AppHandle, force: bool) -> Result<Payload, S
             let peek = peek.unwrap();
             return Ok(Payload::Skip {
                 reason: format!("画面未变（差异 {:.2}%）", peek.ratio * 100.0),
+                // 画面逐像素没变 ⇒ 上一帧的叠加当然还成立，可以无限期保持
+                hold: true,
             });
         }
         android_capture::grab(&h)?
