@@ -38,6 +38,14 @@ header {
 }
 #pinbar button.floor.on { background: #2d7ff9; color: #fff; border-color: #2d7ff9; }
 #pinstate { color: #e3b341; font-size: 12px; }
+#hotkeybar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+             margin-top: 8px; font-size: 13px; color: #8b96a3; }
+#hotkeybar button {
+  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
+  border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
+}
+#hotkeybar button b { color: #dde3ea; font: 12px ui-monospace, Menlo, monospace; }
+#hotkeybar button.capturing { border-color: #2d7ff9; color: #2d7ff9; }
 #hint { margin-top: 6px; font-size: 12px; color: #6f7b88; }
 main {
   flex: 1;

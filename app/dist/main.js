@@ -203,6 +203,91 @@ async function initPinUi() {
   renderPin();
 }
 
+// ---------------------------------------------------------------------------
+// 全局热键自定义（仅桌面）
+//
+// 后端用的加速键写法是「修饰键在前、键码在后」，键码名与浏览器
+// KeyboardEvent.code 完全一致（KeyM / Digit1 / F5 / ArrowUp…），
+// 所以这里可以把用户按下的组合直接拼成后端认得的字符串。
+// ---------------------------------------------------------------------------
+let hotkeys = null;
+let capturing_hk = null;
+
+/// "Shift+Alt+KeyM" → "⇧⌥M"，按钮上显示得下
+const HK_SYM = { Shift: "⇧", Alt: "⌥", Control: "⌃", Super: "⌘" };
+function hkLabel(s) {
+  if (!s) return "…";
+  const parts = s.split("+");
+  const code = parts.pop();
+  const key = code.replace(/^Key|^Digit/, "");
+  return parts.map((m) => HK_SYM[m] || m + "+").join("") + key;
+}
+
+function renderHotkeys() {
+  for (const b of document.querySelectorAll("#hotkeybar button.hk")) {
+    b.querySelector("b").textContent = hkLabel(hotkeys?.[b.dataset.key]);
+    b.classList.toggle("capturing", capturing_hk === b.dataset.key);
+  }
+  $("hint").textContent = capturing_hk
+    ? "请按下新的组合键（需含 ⇧⌃⌥⌘ 之一；Esc 取消）"
+    : "全局热键在游戏里也生效；点上面的按钮即可改键";
+}
+
+async function commitHotkeys(next) {
+  try {
+    hotkeys = await invoke("set_hotkeys", next);
+  } catch (e) {
+    setStatus(String(e), "warn");
+  }
+  capturing_hk = null;
+  renderHotkeys();
+}
+
+async function initHotkeyUi() {
+  $("hotkeybar").hidden = false;
+  try { hotkeys = await invoke("get_hotkeys"); } catch { return; }
+  renderHotkeys();
+
+  for (const b of document.querySelectorAll("#hotkeybar button.hk")) {
+    b.addEventListener("click", () => {
+      capturing_hk = capturing_hk === b.dataset.key ? null : b.dataset.key;
+      renderHotkeys();
+    });
+  }
+  $("hk-reset").addEventListener("click", () =>
+    commitHotkeys({ toggleOverlay: "Shift+Alt+KeyM", resetLock: "Shift+Alt+KeyR" })
+  );
+
+  window.addEventListener("keydown", (ev) => {
+    if (!capturing_hk) return;
+    ev.preventDefault();
+    if (ev.code === "Escape") {
+      capturing_hk = null;
+      return renderHotkeys();
+    }
+    // 只按住修饰键时先不作数，等真正的主键
+    if (/^(Shift|Control|Alt|Meta)(Left|Right)$/.test(ev.code)) return;
+    const mods = [];
+    if (ev.ctrlKey) mods.push("Control");
+    if (ev.altKey) mods.push("Alt");
+    if (ev.shiftKey) mods.push("Shift");
+    if (ev.metaKey) mods.push("Super");
+    if (!mods.length) {
+      // 不带修饰键的全局热键会把整个系统的这个按键抢走
+      setStatus("全局热键必须带至少一个修饰键（⇧⌃⌥⌘）", "warn");
+      return;
+    }
+    const combo = mods.concat(ev.code).join("+");
+    const next = {
+      toggleOverlay: hotkeys.toggle_overlay,
+      resetLock: hotkeys.reset_lock,
+    };
+    if (capturing_hk === "toggle_overlay") next.toggleOverlay = combo;
+    else next.resetLock = combo;
+    commitHotkeys(next);
+  });
+}
+
 function drawDoors(doors) {
   const r = Math.max(8, canvas.height * 0.014);
   ctx.font = `bold ${Math.max(15, canvas.height * 0.026)}px "PingFang SC", sans-serif`;
@@ -442,6 +527,8 @@ listen("hotkey", async (ev) => {
   try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
 
   await initPinUi();
+  if (caps.hotkeys) await initHotkeyUi();
+  else $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
 
   if (caps.needs_capture_permission) {
     // Android：悬浮窗由系统权限管控，勾选时按需申请
@@ -450,7 +537,6 @@ listen("hotkey", async (ev) => {
     $("chk-top").closest("label")?.style.setProperty("opacity", "0.4");
     $("chk-overlay").checked = false;
     overlayMode = false;
-    $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
     $("chk-overlay").addEventListener("change", async (ev) => {
       if (!ev.target.checked) return;
       try {

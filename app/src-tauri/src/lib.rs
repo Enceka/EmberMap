@@ -48,6 +48,25 @@ const GEOM_MIN_OVERLAP: usize = 20;
 /// 连续拦这么多帧就放行，免得地图真挪远了从此再也跟不上
 const GEOM_MAX_REJECT: u32 = 2;
 
+/// 锁定变体后，是否采信本帧。
+///
+/// 锁定绕开了跟踪器的多帧投票——候选里只剩这一个变体，跨变体比分差无从谈起。
+/// 但跟踪器同时还挡着另一类东西：**没有判别力的帧**。关掉大地图后 HUD 角落
+/// 还留着个小地图，它太小，各参考分数挤在 0.845-0.857（实测分差 0.00-0.006），
+/// 分数过得了门槛却毫无判别力。不锁定时 MIN_FRAME_ADVANTAGE 把它挡住了，
+/// 锁定后这道闸不能跟着一起丢，否则就是「锁定了、地图关掉了、叠加层还在」。
+///
+/// 锁定后改用同一变体各楼层之间的分差：真地图会明确选中某一层，
+/// 实测领先次佳楼层 0.137 与 0.264，留足了余量。
+fn pin_confident(scores: &[f32], gate: f32) -> bool {
+    let Some(&top) = scores.first() else { return false };
+    if top < gate {
+        return false;
+    }
+    // 连楼层也锁死时只剩一个候选，无从比较，只能看分数
+    scores.get(1).is_none_or(|&next| top - next >= tracker::MIN_FRAME_ADVANTAGE)
+}
+
 /// 两个矩形的交叠面积占较小者的百分比
 fn overlap_pct(a: [usize; 4], b: [usize; 4]) -> usize {
     let x0 = a[0].max(b[0]);
@@ -281,10 +300,13 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
             // 钉了变体就绕开投票/粘滞：候选里只剩这一个变体，「与次佳变体比分差」
             // 无从谈起，多帧印证也没有意义——用户已经替它作了保。
             let (best_i, confident, phase, evidence, advantage) = if pin_state.variant.is_some() {
-                let ok = candidates[0].score >= em_core::CONFIDENCE_GATE;
+                let scores: Vec<f32> = candidates.iter().map(|c| c.score).collect();
+                let ok = pin_confident(&scores, em_core::CONFIDENCE_GATE);
+                let adv = scores.first().copied().unwrap_or(0.0)
+                    - scores.get(1).copied().unwrap_or(0.0);
                 let mut tk = state.tracker.lock().unwrap();
                 tk.prior_scale_full = ok.then_some(candidates[0].scale_full);
-                (0usize, ok, "pinned".to_string(), 0.0, 0.0)
+                (0usize, ok, "pinned".to_string(), 0.0, adv)
             } else {
                 let flat: Vec<(String, f32)> =
                     candidates.iter().map(|c| (c.variant.clone(), c.score)).collect();
@@ -888,36 +910,105 @@ fn overlay_hide(app: tauri::AppHandle) {
 }
 
 
-/// 全局热键：即使焦点在游戏里也能用。前端收到 hotkey 事件后执行对应动作。
+/// 全局热键设置。字符串用 tauri 的加速键写法：修饰键在前、键码在后，
+/// 例如 "Shift+Alt+KeyM"。键码名与浏览器 KeyboardEvent.code 一致，
+/// 前端因此可以直接把用户按下的组合拼成这个字符串。
 #[cfg(desktop)]
-fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+#[derive(Clone, Serialize, serde::Deserialize)]
+struct Hotkeys {
+    toggle_overlay: String,
+    reset_lock: String,
+}
 
-    let toggle = Shortcut::new(Some(Modifiers::SHIFT | Modifiers::ALT), Code::KeyM);
-    let redo = Shortcut::new(Some(Modifiers::SHIFT | Modifiers::ALT), Code::KeyR);
+#[cfg(desktop)]
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Hotkeys {
+            toggle_overlay: "Shift+Alt+KeyM".into(),
+            reset_lock: "Shift+Alt+KeyR".into(),
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn hotkeys_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let dir = app.path().app_config_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("hotkeys.json"))
+}
+
+#[cfg(desktop)]
+fn load_hotkeys(app: &tauri::AppHandle) -> Hotkeys {
+    hotkeys_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// 全局热键：即使焦点在游戏里也能用。前端收到 hotkey 事件后执行对应动作。
+/// 每次改键都整体重注册——先全解绑再绑新的，避免旧组合残留。
+#[cfg(desktop)]
+fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+    let parse = |s: &str, what: &str| {
+        Shortcut::from_str(s).map_err(|e| format!("{what}「{s}」无法识别：{e}"))
+    };
+    let toggle = parse(&hk.toggle_overlay, "切换覆盖层的热键")?;
+    let redo = parse(&hk.reset_lock, "重新识别的热键")?;
+    if toggle == redo {
+        return Err("两个热键不能设成同一个组合".into());
+    }
+
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
     let handle = app.clone();
-    app.plugin(
-        tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |_app, sc, ev| {
-                if ev.state() != ShortcutState::Pressed {
-                    return;
-                }
-                let action = if sc == &toggle {
-                    "toggle_overlay"
-                } else if sc == &redo {
-                    "reset_lock"
-                } else {
-                    return;
-                };
-                let _ = handle.emit("hotkey", action);
-            })
-            .with_shortcuts([toggle, redo])
-            .map_err(|e| e.to_string())?
-            .build(),
-    )
-    .map_err(|e| e.to_string())?;
-    eprintln!("[em] 全局热键：⇧⌥M 切换覆盖层，⇧⌥R 重新识别");
+    gs.on_shortcuts([toggle, redo], move |_app, sc, ev| {
+        if ev.state() != ShortcutState::Pressed {
+            return;
+        }
+        let action = if sc == &toggle {
+            "toggle_overlay"
+        } else if sc == &redo {
+            "reset_lock"
+        } else {
+            return;
+        };
+        let _ = handle.emit("hotkey", action);
+    })
+    .map_err(|e| format!("注册热键失败（可能已被别的程序占用）：{e}"))?;
+    eprintln!(
+        "[em] 全局热键：{} 切换覆盖层，{} 重新识别",
+        hk.toggle_overlay, hk.reset_lock
+    );
     Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn get_hotkeys(app: tauri::AppHandle) -> Hotkeys {
+    load_hotkeys(&app)
+}
+
+/// 改键：先试着注册，成功了才落盘——注册失败时旧的仍然有效，不会两头落空
+#[cfg(desktop)]
+#[tauri::command]
+fn set_hotkeys(
+    app: tauri::AppHandle,
+    toggle_overlay: String,
+    reset_lock: String,
+) -> Result<Hotkeys, String> {
+    let hk = Hotkeys { toggle_overlay, reset_lock };
+    if let Err(e) = apply_hotkeys(&app, &hk) {
+        // 回滚到原来的设置，别让用户既丢了新键也丢了旧键
+        let _ = apply_hotkeys(&app, &load_hotkeys(&app));
+        return Err(e);
+    }
+    if let Some(p) = hotkeys_path(&app) {
+        let _ = std::fs::write(p, serde_json::to_string_pretty(&hk).unwrap_or_default());
+    }
+    Ok(hk)
 }
 
 /// 从参考库自身合成一个「部分探索」查询并匹配，验证核心可用。
@@ -964,12 +1055,20 @@ pub fn run() {
             geom: Mutex::new(GeomGuard::default()),
         })
         .setup(|app| {
+            // 插件先装上，apply_hotkeys 才能通过 global_shortcut() 动态改键
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
             let dir = resolve_bundle_dir(app.handle());
             eprintln!("[em] 数据包目录：{}", dir.display());
             *app.state::<AppState>().bundle_dir.lock().unwrap() = dir;
             #[cfg(desktop)]
-            if let Err(e) = register_hotkeys(app.handle()) {
-                eprintln!("[em] 全局热键注册失败（不影响其他功能）：{e}");
+            {
+                let h = app.handle();
+                let hk = load_hotkeys(h);
+                if let Err(e) = apply_hotkeys(h, &hk) {
+                    eprintln!("[em] 全局热键注册失败（不影响其他功能）：{e}");
+                }
             }
             // 移动端启动自检：加载参考库并跑一次合成匹配，
             // 验证识别核心（FFT/rayon/掩码）在该架构上确实可用
@@ -991,6 +1090,8 @@ pub fn run() {
         list_maps,
         floor_map,
         capabilities,
+        get_hotkeys,
+        set_hotkeys,
         overlay_update,
         overlay_hide
     ]);
@@ -1213,5 +1314,40 @@ mod e2e_tests {
             Payload::Ok { confident, .. } => assert!(!confident, "地图已消失不该仍报置信"),
             Payload::Skip { hold, reason } => panic!("返回 Skip(hold={hold})：{reason}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod pin_gate_tests {
+    use super::pin_confident;
+
+    const GATE: f32 = 0.78;
+
+    #[test]
+    fn 真地图各楼层分得开就采信() {
+        // 实测：shot-20260827 锁定左中门1-1 → 1f 0.859 / 2f 0.722 / b1 0.595
+        assert!(pin_confident(&[0.859, 0.722, 0.595], GATE));
+        // shot-20260826 锁定右中门1-2
+        assert!(pin_confident(&[0.844, 0.580, 0.573], GATE));
+    }
+
+    #[test]
+    fn 无判别力的帧不采信() {
+        // 关掉大地图后 HUD 角落的小地图：分数都高，彼此却几乎并列。
+        // 不锁定时靠跟踪器挡住，锁定后靠这里挡住，否则叠加层会一直挂着。
+        assert!(!pin_confident(&[0.855, 0.851, 0.846], GATE));
+        assert!(!pin_confident(&[0.850, 0.850, 0.849], GATE));
+    }
+
+    #[test]
+    fn 分数不过门槛不采信() {
+        assert!(!pin_confident(&[0.70, 0.50, 0.40], GATE));
+        assert!(!pin_confident(&[], GATE));
+    }
+
+    #[test]
+    fn 连楼层也锁死时只看分数() {
+        assert!(pin_confident(&[0.85], GATE));
+        assert!(!pin_confident(&[0.70], GATE));
     }
 }
