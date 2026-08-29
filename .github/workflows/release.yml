@@ -34,7 +34,13 @@ jobs:
       name: ${{ steps.plan.outputs.name }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
       banner: ${{ steps.plan.outputs.banner }}
+      # 要写进 tauri.conf.json 的版本号；打 tag 时为空表示不改
+      version: ${{ steps.plan.outputs.version }}
+      # 产物文件名里用的版本标签（打 tag 时即 conf 里原本的版本号）
+      label: ${{ steps.plan.outputs.label }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: 按触发方式决定 tag / 名称 / 是否预发布
         id: plan
         env:
@@ -44,29 +50,40 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           short="${SHA:0:7}"
+          # nightly 是滚动覆盖的：tag、Release 名、产物文件名全都一样，
+          # 编几次都分不清手里是哪一份。给测试构建的版本号缀上 UTC 时间戳，
+          # 文件名与应用内回显都会带上它。
+          base=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          stamp=$(date -u +%Y%m%d%H%M)
+          human=$(date -u +'%Y-%m-%d %H:%M UTC')
           if [ -n "$INPUT_TAG" ]; then
             tag="$INPUT_TAG"
-            name="EmberMap $INPUT_TAG（测试）"
+            version="${base}-test.${stamp}"
+            name="EmberMap $INPUT_TAG（测试 · $human）"
             pre=true
-            banner="> ⚠️ 手动触发的测试构建（commit $short），未经实机验证。"
+            banner="> ⚠️ 手动触发的测试构建（$version，commit $short，构建于 $human），未经实机验证。"
           elif [ "$REF_TYPE" = tag ]; then
             tag="$REF_NAME"
+            version=""            # 打 tag 时以 tauri.conf.json 里的版本号为准，不动它
             name="EmberMap $REF_NAME"
             pre=false
             banner=""
           else
             tag=nightly
-            name="EmberMap 测试版（main）"
+            version="${base}-nightly.${stamp}"
+            name="EmberMap 测试版（main · $human）"
             pre=true
-            banner="> ⚠️ main 分支的滚动测试构建（commit $short），每次推送覆盖，未经实机验证。要稳定版请找带版本号的正式 Release。"
+            banner="> ⚠️ main 分支的滚动测试构建（$version，commit $short，构建于 $human），每次推送覆盖，未经实机验证。要稳定版请找带版本号的正式 Release。"
           fi
           {
             echo "tag=$tag"
             echo "name=$name"
             echo "prerelease=$pre"
             echo "banner=$banner"
+            echo "version=$version"
+            echo "label=${version:-$base}"
           } >> "$GITHUB_OUTPUT"
-          echo "本次发布：$tag（prerelease=$pre）"
+          echo "本次发布：$tag（版本 ${version:-$base}，prerelease=$pre）"
 
       # nightly 是滚动的：不先删，上一轮的产物会和这一轮混在同一个 Release 里
       - name: 清掉上一份 nightly
@@ -123,6 +140,23 @@ jobs:
           # 22.04 自带 pipewire 0.3.48，缺 spa_video_info_raw.flags 等字段会编译失败，
           # 24.04 为 1.0.5。代价：产物链接 glibc 2.39，无法在更老的发行版上运行。
 
+      # 测试构建：把带时间戳的版本号写进 tauri.conf.json。
+      # 它决定 .dmg/-setup.exe/.AppImage/.deb 的文件名，以及应用内回显的版本，
+      # 三个平台共用同一段脚本，node 在所有 runner 上都自带。
+      - name: 打上带时间戳的版本号
+        if: needs.meta.outputs.version != ''
+        shell: bash
+        env:
+          V: ${{ needs.meta.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs"), f = "app/src-tauri/tauri.conf.json";
+            const j = JSON.parse(fs.readFileSync(f, "utf8"));
+            j.version = process.env.V;
+            fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+          '
+          echo "版本号 → $V"
+
       - name: 校验数据包完整（39 个楼层掩码）
         shell: bash
         run: |
@@ -155,7 +189,10 @@ jobs:
             **未签名说明**：macOS 首次打开请右键 → 打开；Windows 可能出现
             SmartScreen 提示，选「更多信息 → 仍要运行」；Android 需允许「安装未知来源应用」。
 
-            **热键**：⇧⌥M 切换覆盖层，⇧⌥R 重新识别。
+            **热键**（可在界面上改）：⇧⌥C 抓屏匹配，⇧⌥M 切换覆盖层，⇧⌥R 重新识别。
+
+            装好后应用界面底部会显示版本号；测试构建带 UTC 时间戳，
+            形如 `0.1.0-nightly.202608291530`，便于区分是哪一次编出来的。
 
             > 本工具只处理屏幕画面，不读取游戏内存、不注入、不模拟操作。
             > 地图素材来源见仓库 README 结尾。
@@ -176,6 +213,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 与桌面矩阵同一段脚本：APK 的 versionName 与文件名都跟着这个版本号走
+      - name: 打上带时间戳的版本号
+        if: needs.meta.outputs.version != ''
+        shell: bash
+        env:
+          V: ${{ needs.meta.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs"), f = "app/src-tauri/tauri.conf.json";
+            const j = JSON.parse(fs.readFileSync(f, "utf8"));
+            j.version = process.env.V;
+            fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+          '
+          echo "版本号 → $V"
+
       - name: 构建 APK（arm64-v8a + x86_64）
         id: apk
         uses: ./.github/actions/android-apk
@@ -190,7 +242,7 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          TAG: ${{ needs.meta.outputs.tag }}
+          LABEL: ${{ needs.meta.outputs.label }}
           APK: ${{ steps.apk.outputs.apk }}
         run: |
           set -euo pipefail
@@ -216,9 +268,9 @@ jobs:
           "${tools}zipalign" -p -f 4 "$apk" /tmp/aligned.apk
           "${tools}apksigner" sign --ks /tmp/em.jks --ks-pass "pass:$storepass" \
             --key-pass "pass:$keypass" --ks-key-alias "$alias" \
-            --out "EmberMap_${TAG}_android.apk" /tmp/aligned.apk
-          "${tools}apksigner" verify --print-certs "EmberMap_${TAG}_android.apk"
-          ls -lh "EmberMap_${TAG}_android.apk"
+            --out "EmberMap_${LABEL}_android.apk" /tmp/aligned.apk
+          "${tools}apksigner" verify --print-certs "EmberMap_${LABEL}_android.apk"
+          ls -lh "EmberMap_${LABEL}_android.apk"
 
       - uses: actions/upload-artifact@v4
         with:

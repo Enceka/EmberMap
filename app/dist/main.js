@@ -585,6 +585,8 @@ listen("hotkey", async (ev) => {
   try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
   // 提前定平台：renderIdle 的说明文案要按平台分岔
   androidOverlay = !!caps.needs_capture_permission && !!caps.overlay;
+  // 测试构建的版本号带时间戳，回显出来才知道手里是哪一次编的
+  if (caps.version) $("ver").textContent = `EmberMap ${caps.version}`;
 
   await initPinUi();
   initIdleUi();

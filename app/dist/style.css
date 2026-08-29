@@ -60,3 +60,11 @@ main {
 #alpha-val, #idle-val { min-width: 34px; color: #8b96a3; font-variant-numeric: tabular-nums; }
 #perf { padding: 0 4px 10px; font-size: 12px; color: #6f7b88; }
 #perf b { color: #9aa6b2; font-weight: 600; }
+#about { padding: 4px 4px 16px; font-size: 12px; color: #6f7b88; line-height: 1.6; }
+#about summary { cursor: pointer; color: #55606c; }
+#about summary::marker { color: #45505f; }
+#about p, #about ul { margin: 6px 0; }
+#about ul { padding-left: 18px; }
+#about b { color: #9aa6b2; font-weight: 600; }
+#about .notice { color: #8b7a4a; }
+#ver { font: 11px ui-monospace, Menlo, monospace; color: #6f7b88; }

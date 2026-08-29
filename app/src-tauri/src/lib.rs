@@ -753,10 +753,13 @@ async fn request_overlay_permission(app: tauri::AppHandle) -> Result<bool, Strin
 #[cfg(target_os = "android")]
 struct AndroidPlugin(tauri::plugin::PluginHandle<tauri::Wry>);
 
-/// 前端据此决定显示哪些功能：Android 尚无悬浮窗
+/// 前端据此决定显示哪些功能，并回显版本号——
+/// 测试构建的版本号带时间戳（0.1.0-nightly.YYYYMMDDHHMM），
+/// 界面上显示出来才分得清手里装的到底是哪一次编出来的。
 #[tauri::command]
-fn capabilities() -> serde_json::Value {
+fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
     serde_json::json!({
+        "version": app.package_info().version.to_string(),
         // Android 经 MediaProjection 取帧，但需用户先授权
         "screen_capture": true,
         "needs_capture_permission": cfg!(target_os = "android"),
