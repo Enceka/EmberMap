@@ -1,5 +1,6 @@
 // EmberMap 前端：调用后端匹配，canvas 合成叠加（截图 + 手绘 screen 混合 + 门位）。
-// 自动监测为自适应连续循环：分析完歇 IDLE_FAST 即下一轮；连续未检出则放缓省 CPU。
+// 自动监测为自适应连续循环：分析完歇一小会儿即下一轮，连续未检出则放缓省电；
+// 歇多久由用户设的「监测间隔」按比例派生（见 idles()）。
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
@@ -9,15 +10,24 @@ const statusEl = $("status");
 const canvas = $("view");
 const ctx = canvas.getContext("2d");
 
-const IDLE_FAST = 300;    // 地图刚出现/结果变化时的轮询间歇 ms
-const IDLE_STABLE = 800;  // 结果稳定时放缓，省 CPU
-const IDLE_SLOW = 1500;   // 连续未检出后的放缓间歇 ms
-const IDLE_PEEK = 400;    // 后端判定画面没动：这一轮几乎不花钱，可以勤查
-// 叠加层保活时限：这么久没拿到「有效」的一轮就强制收起。
-// 兜底而非主路径——正常路径是 no_panel 立即收、连续两帧不置信收。
-// 有它才能保证「叠加层赖在屏幕上不走」这类问题不可能发生，
-// 不管后端将来因为什么原因不再给出结果。
-const OVERLAY_TTL = 6000;
+// 监测节奏：用户只调一个「基准间隔」，四档由它按比例派生。
+// 真正吃 CPU 的是每轮的识别本身（桌面 1.3-2.2s、手机 1-2s），
+// 间歇只决定两轮之间歇多久，所以间歇越短≠越快，只是越费电。
+const IDLE_DEFAULT = 800;
+let idleBase = Number(localStorage.getItem("em_idle") ?? IDLE_DEFAULT);
+const idles = () => ({
+  fast: Math.max(150, Math.round(idleBase * 0.4)), // 地图刚出现/结果在变
+  stable: idleBase,                                 // 结果稳定
+  slow: Math.round(idleBase * 2),                   // 连续没检出，进一步省电
+  peek: Math.min(idleBase, 500),                    // 后端判定画面没动，这轮几乎不花钱
+});
+let lastAnalyzeMs = 0;   // 上一轮识别实际耗时，用于估算占用与保活时限
+
+/// 叠加层保活时限：这么久没拿到「有效」的一轮就强制收起。
+/// 兜底而非主路径——正常路径是 no_panel 立即收、连续两帧不置信收。
+/// 必须随监测节奏走：用户把间隔调到 5 秒时，一轮就要 6 秒以上，
+/// 写死 6 秒会把好端端的叠加层每轮误收一次。
+const overlayTtl = () => Math.max(6000, Math.round((lastAnalyzeMs + idleBase) * 2.5));
 
 let lastPayload = null;
 let pending = { key: null, n: 0 };  // 低分新结果的 2 帧确认
@@ -203,6 +213,40 @@ async function initPinUi() {
   renderPin();
 }
 
+/// 监测节奏与它的实测代价。
+///
+/// 不写死一句「可能影响性能」，而是拿本机真实测到的单轮耗时算给用户看：
+/// 占用 = 识别耗时 /（识别耗时 + 间歇）——这一轮跑完立刻又开下一轮时，
+/// 这个比例就是识别线程持续忙碌的时间占比。
+function renderIdle() {
+  // 每轮识别完都会刷新这里；正在拖滑块时别回写同一个值去打断拖拽
+  if (Number($("rng-idle").value) !== idleBase) $("rng-idle").value = idleBase;
+  $("idle-val").textContent = idleBase === 0 ? "不歇" : `${(idleBase / 1000).toFixed(1)}s`;
+  if (!lastAnalyzeMs) {
+    $("perf").textContent = "监测间隔＝两轮识别之间歇多久；识别本身的耗时不受它影响。";
+    return;
+  }
+  const cycle = lastAnalyzeMs + idleBase;
+  const duty = Math.round((lastAnalyzeMs / cycle) * 100);
+  $("perf").innerHTML =
+    `本机单轮识别 <b>${(lastAnalyzeMs / 1000).toFixed(1)}s</b>，` +
+    `当前约每 <b>${(cycle / 1000).toFixed(1)}s</b> 测一次，` +
+    `识别持续占用约 <b>${duty}%</b> 的时间（多核并行，占的是这段时间里的算力）。` +
+    `<br>调短＝叠加层跟手但更费电，调长＝省电但地图开合、拖动会慢半拍；` +
+    (androidOverlay
+      ? "手机上画面没动的那些轮次会被廉价采样跳过，几乎不花钱，所以调长主要影响「画面在动时」的跟随。"
+      : "识别本身的耗时不随间隔变化，间隔调到 0 也不会更快，只是不停地测。");
+}
+
+function initIdleUi() {
+  renderIdle();
+  $("rng-idle").addEventListener("input", () => {
+    idleBase = Number($("rng-idle").value);
+    localStorage.setItem("em_idle", String(idleBase));
+    renderIdle();
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 全局热键自定义（仅桌面）
 //
@@ -381,7 +425,13 @@ async function analyzeOnce(auto) {
   if (!auto) setStatus("抓屏匹配中…");
   try {
     // 手动点按钮时强制真抓一次：跳帧优化不该让按钮看起来像坏了
+    const t0 = performance.now();
     const p = await invoke("analyze_screen", { force: !auto });
+    // 只统计真跑了识别的轮次；skip 轮几乎不花钱，计进去会低估占用
+    if (p.status !== "skip") {
+      lastAnalyzeMs = Math.round(performance.now() - t0);
+      renderIdle();
+    }
     // 本轮不出结果，不移动叠加层。hold=true 表示画面逐像素没变，
     // 那上一帧的叠加仍然成立，可以续上保活时限；hold=false 是「没能验证」，
     // 不能拿来续命，否则叠加层会永远赖在屏幕上（关掉地图也不消失）。
@@ -460,14 +510,15 @@ async function watchLoop() {
     const r = await analyzeOnce(true);
     // skip 既不算命中也不算落空：画面没动，上一轮的判断依然成立
     if (r !== "skip") misses = r === "hit" ? 0 : misses + 1;
-    let idle = IDLE_FAST;
-    if (r === "skip") idle = IDLE_PEEK;
-    else if (misses >= 3) idle = IDLE_SLOW;
-    else if (r === "hit" && shownKey && shownKey === prevKey) idle = IDLE_STABLE;
+    const iv = idles();
+    let idle = iv.fast;
+    if (r === "skip") idle = iv.peek;
+    else if (misses >= 3) idle = iv.slow;
+    else if (r === "hit" && shownKey && shownKey === prevKey) idle = iv.stable;
     if (r !== "skip") prevKey = shownKey;
     // 保活兜底：太久没确认过叠加层仍然有效就收起来。
     // 上一版把「无法验证」的帧也当成保持，结果地图关了叠加层还赖在屏幕上。
-    if (overlayVisible && Date.now() - overlayGoodAt > OVERLAY_TTL) {
+    if (overlayVisible && Date.now() - overlayGoodAt > overlayTtl()) {
       console.warn("[em] 叠加层超过保活时限未获确认，收起");
       await hideOverlay();
     }
@@ -525,14 +576,16 @@ listen("hotkey", async (ev) => {
 (async () => {
   let caps = { screen_capture: true, overlay: true, needs_capture_permission: false };
   try { caps = await invoke("capabilities"); } catch { /* 旧版后端，按桌面处理 */ }
+  // 提前定平台：renderIdle 的说明文案要按平台分岔
+  androidOverlay = !!caps.needs_capture_permission && !!caps.overlay;
 
   await initPinUi();
+  initIdleUi();
   if (caps.hotkeys) await initHotkeyUi();
   else $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
 
   if (caps.needs_capture_permission) {
     // Android：悬浮窗由系统权限管控，勾选时按需申请
-    androidOverlay = caps.overlay;
     $("chk-top").disabled = true;
     $("chk-top").closest("label")?.style.setProperty("opacity", "0.4");
     $("chk-overlay").checked = false;

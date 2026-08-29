@@ -23,6 +23,10 @@
         <input type="range" id="rng-alpha" min="10" max="100" value="45" />
         <span id="alpha-val">45%</span>
       </label>
+      <label title="两轮识别之间歇多久。识别本身的耗时不受它影响">监测间隔
+        <input type="range" id="rng-idle" min="0" max="5000" step="100" value="800" />
+        <span id="idle-val">0.8s</span>
+      </label>
     </div>
     <!-- 手动锁定：认对了就钉住，之后只跟这张图比，主界面等画面不会再被误判 -->
     <div id="pinbar">
@@ -49,6 +53,8 @@
     <ul id="candidates"></ul>
     <!-- 叠加层几何：真机排障时用户拍一张就能对账，省一次「装包→复现」往返 -->
     <div id="geom"></div>
+    <!-- 监测节奏的实测代价：拿真实耗时算，不写死一句「可能影响性能」 -->
+    <div id="perf"></div>
   </main>
   <script src="main.js"></script>
 </body>
