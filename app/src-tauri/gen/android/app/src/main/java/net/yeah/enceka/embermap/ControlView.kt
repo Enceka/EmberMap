@@ -108,8 +108,10 @@ class ControlView(
         row.addView(handle)
 
         btnShoot = mkButton("抓屏匹配") { onAction("capture", null) }
-        btnOverlay = mkButton("叠加") { onAction("toggle_overlay", null) }
-        btnMap = mkButton("整层") { onAction("toggle_map", null) }
+        // 开关类按钮把「开/关」直接写进文字：只靠蓝色高亮表示状态，
+        // 用户容易看不出它是个开关（实测就被当成没有这个功能）
+        btnOverlay = mkButton("叠加层 关") { onAction("toggle_overlay", null) }
+        btnMap = mkButton("整层 关") { onAction("toggle_map", null) }
         val btnReset = mkButton("重识") { onAction("reset", null) }
         val btnClose = mkButton("✕") { onAction("close", null) }
         for (b in listOf(btnShoot, btnOverlay, btnMap, btnReset, btnClose)) {
@@ -153,6 +155,8 @@ class ControlView(
     }
 
     fun setFlags(overlayOn: Boolean, mapOn: Boolean, busy: Boolean) {
+        btnOverlay.text = if (overlayOn) "叠加层 开" else "叠加层 关"
+        btnMap.text = if (mapOn) "整层 开" else "整层 关"
         setOn(btnOverlay, overlayOn)
         setOn(btnMap, mapOn)
         btnShoot.isEnabled = !busy

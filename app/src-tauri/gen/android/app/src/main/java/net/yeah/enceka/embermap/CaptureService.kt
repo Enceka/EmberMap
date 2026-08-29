@@ -47,6 +47,14 @@ class CaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // 手机上没有全局热键，通知栏是唯一「在任何界面都够得着」的入口：
+        // 悬浮控制条被收起、或被全屏应用挡住时，还能从这里开关叠加层。
+        // 事件排进队列，由前端的 pollControl 取走，走与控制条按钮同一条路径。
+        if (intent?.action == ACTION_TOGGLE_OVERLAY) {
+            Log.i("EmberMap", "用户从通知栏开关叠加层")
+            pendingUiActions.add("toggle_overlay")
+            return START_NOT_STICKY
+        }
         startForegroundNotification()
 
         val resultCode = intent?.getIntExtra(EXTRA_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
@@ -114,11 +122,22 @@ class CaptureService : Service() {
             this, 0, stopIntent,
             android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
         )
+        val toggleIntent = Intent(this, CaptureService::class.java).setAction(ACTION_TOGGLE_OVERLAY)
+        // requestCode 必须与 stop 的不同，否则两个 PendingIntent 会被系统视为同一个
+        val togglePending = android.app.PendingIntent.getService(
+            this, 1, toggleIntent,
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
         val notification: Notification = Notification.Builder(this, channelId)
             .setContentTitle("EmberMap 正在识别地图")
             .setContentText("仅读取屏幕画面用于识别")
             .setSmallIcon(android.R.drawable.ic_menu_mapmode)
             .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    null as android.graphics.drawable.Icon?, "开关叠加层", togglePending
+                ).build()
+            )
             .addAction(
                 Notification.Action.Builder(
                     null as android.graphics.drawable.Icon?, "停止投屏", stopPending
@@ -191,6 +210,10 @@ class CaptureService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "net.yeah.enceka.embermap.STOP_CAPTURE"
+        const val ACTION_TOGGLE_OVERLAY = "net.yeah.enceka.embermap.TOGGLE_OVERLAY"
+
+        /** 通知栏按下的动作，等前端 pollControl 取走 */
+        val pendingUiActions = java.util.concurrent.ConcurrentLinkedQueue<String>()
         const val EXTRA_CODE = "resultCode"
         const val EXTRA_DATA = "resultData"
 

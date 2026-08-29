@@ -16,7 +16,7 @@
       <button id="btn-reset" title="清除已锁定的变体，下次全库重扫">重新识别</button>
       <button id="btn-grant" hidden>授权投屏</button>
       <label><input type="checkbox" id="chk-watch" checked /> 自动监测</label>
-      <label><input type="checkbox" id="chk-overlay" checked /> 覆盖模式</label>
+      <label><input type="checkbox" id="chk-overlay" checked /> 叠加层</label>
       <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
       <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
       <label>叠加层不透明度
@@ -43,7 +43,7 @@
     <!-- 全局热键（仅桌面）：点按钮后直接按组合即可改键 -->
     <div id="hotkeybar" hidden>全局热键
       <button class="hk" data-key="capture_now">抓屏匹配 <b>…</b></button>
-      <button class="hk" data-key="toggle_overlay">切换覆盖层 <b>…</b></button>
+      <button class="hk" data-key="toggle_overlay">开关叠加层 <b>…</b></button>
       <button class="hk" data-key="reset_lock">重新识别 <b>…</b></button>
       <button id="hk-reset" title="恢复 ⇧⌥C / ⇧⌥M / ⇧⌥R">恢复默认</button>
     </div>

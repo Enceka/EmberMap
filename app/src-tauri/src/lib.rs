@@ -1007,7 +1007,7 @@ fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
     let parse = |s: &str, what: &str| {
         Shortcut::from_str(s).map_err(|e| format!("{what}「{s}」无法识别：{e}"))
     };
-    let toggle = parse(&hk.toggle_overlay, "切换覆盖层的热键")?;
+    let toggle = parse(&hk.toggle_overlay, "开关叠加层的热键")?;
     let redo = parse(&hk.reset_lock, "重新识别的热键")?;
     let shoot = parse(&hk.capture_now, "抓屏匹配的热键")?;
     if toggle == redo || toggle == shoot || redo == shoot {
@@ -1034,7 +1034,7 @@ fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
     })
     .map_err(|e| format!("注册热键失败（可能已被别的程序占用）：{e}"))?;
     eprintln!(
-        "[em] 全局热键：{} 切换覆盖层，{} 重新识别，{} 抓屏匹配",
+        "[em] 全局热键：{} 开关叠加层，{} 重新识别，{} 抓屏匹配",
         hk.toggle_overlay, hk.reset_lock, hk.capture_now
     );
     Ok(())

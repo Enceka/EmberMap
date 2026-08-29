@@ -37,7 +37,7 @@ let busy = false;
 let overlayMode = false;
 let overlayVisible = false;
 let lowConfMiss = 0;       // 面板在但低置信的连续帧数
-let lastPushed = null;     // 上次推给覆盖层的指纹，避免重复推送
+let lastPushed = null;     // 上次推给叠加层的指纹，避免重复推送
 let androidOverlay = false; // Android 悬浮窗由 Kotlin 绘制，参数形状与桌面不同
 let capturing = false;      // Android 投屏是否在进行（授权可被用户随时撤销）
 let captureStopped = null;  // Android：投屏中止时的收尾（由平台分支注入）
@@ -290,14 +290,17 @@ async function syncControl() {
 const CTRL_POLL = 250;
 let ctrlPolling = false;
 
+/// 只要投屏还开着就转——不能只在控制条显示时转：
+/// 通知栏的「开关叠加层」正是为「控制条被收起或被挡住」准备的兜底入口，
+/// 控制条一关就停轮询的话，那个入口就成了摆设。
 async function controlLoop() {
   if (ctrlPolling) return;
   ctrlPolling = true;
   try {
-    while (ctrl.shown) {
+    while (capturing) {
       try {
         const r = await invoke("poll_control");
-        if (!r.shown) { ctrl.shown = false; break; }
+        ctrl.shown = !!r.controlShown;
         for (const a of r.actions || []) await onControlAction(a.action, a.value);
       } catch { /* 投屏停了之类，下一轮自然退出 */ }
       await sleep(CTRL_POLL);
@@ -368,6 +371,7 @@ async function onControlAction(action, value) {
       await burstCapture();
       return;
     case "toggle_overlay": {
+      // 走界面上那个复选框，保证应用内与悬浮窗、通知栏三处状态始终一致
       const box = $("chk-overlay");
       box.checked = !box.checked;
       box.dispatchEvent(new Event("change"));
@@ -547,7 +551,7 @@ function overlayArgs(p) {
   };
 }
 
-// 指纹：结果/几何没变就不重推覆盖层
+// 指纹：结果/几何没变就不重推叠加层
 function fingerprint(p) {
   const t = p.tf;
   return [p.name, p.floor, ...p.view, t.scale.toFixed(3),
@@ -711,7 +715,7 @@ $("chk-watch").addEventListener("change", async (ev) => {
 $("chk-overlay").addEventListener("change", async (ev) => {
   overlayMode = ev.target.checked;
   if (overlayMode) {
-    setStatus("覆盖模式开——识别到地图后自动贴上去（点击穿透，不挡操作）");
+    setStatus("叠加层开——识别到地图后自动贴上去（点击穿透，不挡操作）");
     await pushOverlay(true);
   } else {
     await hideOverlay();
@@ -726,7 +730,7 @@ $("rng-alpha").addEventListener("input", () => {
 });
 listen("overlay-ready", () => pushOverlay(true));
 
-// 全局热键（焦点在游戏里也生效）：⇧⌥M 切覆盖层，⇧⌥R 重新识别
+// 全局热键（焦点在游戏里也生效）：默认 ⇧⌥C 抓屏匹配、⇧⌥M 开关叠加层、⇧⌥R 重新识别
 listen("hotkey", async (ev) => {
   if (ev.payload === "toggle_overlay") {
     const box = $("chk-overlay");

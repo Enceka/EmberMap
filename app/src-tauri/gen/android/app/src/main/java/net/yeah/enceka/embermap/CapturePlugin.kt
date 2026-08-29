@@ -109,6 +109,11 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun pollControl(invoke: Invoke) {
         val arr = app.tauri.plugin.JSArray()
+        // 通知栏按下的动作与控制条按钮走同一条路径，前端不必分辨来源
+        while (true) {
+            val a = CaptureService.pendingUiActions.poll() ?: break
+            arr.put(JSObject().apply { put("action", a) })
+        }
         while (true) {
             val (action, value) = pendingActions.poll() ?: break
             val o = JSObject()
@@ -118,7 +123,7 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
         }
         val ret = JSObject()
         ret.put("actions", arr)
-        ret.put("shown", controlView != null)
+        ret.put("controlShown", controlView != null)
         invoke.resolve(ret)
     }
 
