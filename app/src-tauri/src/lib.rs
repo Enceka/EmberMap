@@ -913,11 +913,16 @@ fn overlay_hide(app: tauri::AppHandle) {
 /// 全局热键设置。字符串用 tauri 的加速键写法：修饰键在前、键码在后，
 /// 例如 "Shift+Alt+KeyM"。键码名与浏览器 KeyboardEvent.code 一致，
 /// 前端因此可以直接把用户按下的组合拼成这个字符串。
+///
+/// serde(default)：老的 hotkeys.json 里没有后加的字段，逐字段回落到默认值，
+/// 而不是整份配置解析失败、把用户已经改好的键一并丢掉。
 #[cfg(desktop)]
 #[derive(Clone, Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Hotkeys {
     toggle_overlay: String,
     reset_lock: String,
+    capture_now: String,
 }
 
 #[cfg(desktop)]
@@ -926,6 +931,7 @@ impl Default for Hotkeys {
         Hotkeys {
             toggle_overlay: "Shift+Alt+KeyM".into(),
             reset_lock: "Shift+Alt+KeyR".into(),
+            capture_now: "Shift+Alt+KeyC".into(),
         }
     }
 }
@@ -957,14 +963,15 @@ fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
     };
     let toggle = parse(&hk.toggle_overlay, "切换覆盖层的热键")?;
     let redo = parse(&hk.reset_lock, "重新识别的热键")?;
-    if toggle == redo {
-        return Err("两个热键不能设成同一个组合".into());
+    let shoot = parse(&hk.capture_now, "抓屏匹配的热键")?;
+    if toggle == redo || toggle == shoot || redo == shoot {
+        return Err("三个热键不能有重复的组合".into());
     }
 
     let gs = app.global_shortcut();
     let _ = gs.unregister_all();
     let handle = app.clone();
-    gs.on_shortcuts([toggle, redo], move |_app, sc, ev| {
+    gs.on_shortcuts([toggle, redo, shoot], move |_app, sc, ev| {
         if ev.state() != ShortcutState::Pressed {
             return;
         }
@@ -972,6 +979,8 @@ fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
             "toggle_overlay"
         } else if sc == &redo {
             "reset_lock"
+        } else if sc == &shoot {
+            "capture_now"
         } else {
             return;
         };
@@ -979,8 +988,8 @@ fn apply_hotkeys(app: &tauri::AppHandle, hk: &Hotkeys) -> Result<(), String> {
     })
     .map_err(|e| format!("注册热键失败（可能已被别的程序占用）：{e}"))?;
     eprintln!(
-        "[em] 全局热键：{} 切换覆盖层，{} 重新识别",
-        hk.toggle_overlay, hk.reset_lock
+        "[em] 全局热键：{} 切换覆盖层，{} 重新识别，{} 抓屏匹配",
+        hk.toggle_overlay, hk.reset_lock, hk.capture_now
     );
     Ok(())
 }
@@ -998,8 +1007,9 @@ fn set_hotkeys(
     app: tauri::AppHandle,
     toggle_overlay: String,
     reset_lock: String,
+    capture_now: String,
 ) -> Result<Hotkeys, String> {
-    let hk = Hotkeys { toggle_overlay, reset_lock };
+    let hk = Hotkeys { toggle_overlay, reset_lock, capture_now };
     if let Err(e) = apply_hotkeys(&app, &hk) {
         // 回滚到原来的设置，别让用户既丢了新键也丢了旧键
         let _ = apply_hotkeys(&app, &load_hotkeys(&app));

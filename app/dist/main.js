@@ -299,7 +299,11 @@ async function initHotkeyUi() {
     });
   }
   $("hk-reset").addEventListener("click", () =>
-    commitHotkeys({ toggleOverlay: "Shift+Alt+KeyM", resetLock: "Shift+Alt+KeyR" })
+    commitHotkeys({
+      toggleOverlay: "Shift+Alt+KeyM",
+      resetLock: "Shift+Alt+KeyR",
+      captureNow: "Shift+Alt+KeyC",
+    })
   );
 
   window.addEventListener("keydown", (ev) => {
@@ -325,9 +329,9 @@ async function initHotkeyUi() {
     const next = {
       toggleOverlay: hotkeys.toggle_overlay,
       resetLock: hotkeys.reset_lock,
+      captureNow: hotkeys.capture_now,
     };
-    if (capturing_hk === "toggle_overlay") next.toggleOverlay = combo;
-    else next.resetLock = combo;
+    next[{ toggle_overlay: "toggleOverlay", reset_lock: "resetLock", capture_now: "captureNow" }[capturing_hk]] = combo;
     commitHotkeys(next);
   });
 }
@@ -569,6 +573,9 @@ listen("hotkey", async (ev) => {
     box.dispatchEvent(new Event("change"));
   } else if (ev.payload === "reset_lock") {
     $("btn-reset").click();
+  } else if (ev.payload === "capture_now") {
+    // 与点按钮同一条路径：force=true，绕开跳帧直接真抓一次
+    analyzeOnce(false);
   }
 });
 
