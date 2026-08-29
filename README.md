@@ -47,6 +47,11 @@ cd app && cargo tauri android build --target aarch64 --target x86_64 --apk
 宁可持续显示「识别中」）；锁定后仍每帧全库扫描，锁只作显示粘滞，
 所以误判能在两帧内自我纠正。详见 `app/src-tauri/src/tracker.rs`。
 
+回归测试：`app/src-tauri` 的 e2e 用例直接从 `run_analysis` 这一层验证整条链路
+——用参考掩码合成「屏幕上开着地图」的帧，再验证地图消失/换图之后，
+返回的 payload 一定能让前端收起叠加层。这条链路断过一次（几何不可信的帧
+一律返回「保持现状」，导致叠加层永远收不起来），当时单元测试全绿。
+
 排障：应用把每帧决策写到 stderr（耗时/相位/证据/分差/候选）；
 `EM_DUMP=1` 额外把匹配器所见的裁剪图落到 `/tmp/em_panel.png`。
 

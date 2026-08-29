@@ -1060,3 +1060,158 @@ mod geom_tests {
         assert!(overlap_pct(a, [290, 390, 200, 300]) < 20);
     }
 }
+
+/// 端到端回归：地图从画面上消失后，必须在两帧内让前端能收起叠加层。
+///
+/// 这条链路曾经断过一次——「几何不可信」的帧一律返回 Skip，而 Skip 的语义是
+/// 「保持现状、不计入丢失」，于是叠加层永远收不起来，地图关了还盖在游戏上。
+/// 单元测试都是绿的，因为没人从 run_analysis 这一层验证过整条链路。
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+
+    /// 游戏地图的走廊色（HSV 落在 GAME_RANGES 的蓝灰区间）
+    const CORRIDOR: [u8; 3] = [110, 120, 140];
+    /// 既不是走廊也不是房间、又不至于被判成「几乎全黑」的背景色
+    const BG: [u8; 3] = [60, 90, 60];
+
+    fn state() -> AppState {
+        AppState {
+            lib: Mutex::new(None),
+            tracker: Mutex::new(tracker::Tracker::default()),
+            last_frame: Mutex::new((0, 0)),
+            bundle_dir: Mutex::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../bundle")),
+            pin: Mutex::new(PinState::default()),
+            geom: Mutex::new(GeomGuard::default()),
+        }
+    }
+
+    fn fill(fw: usize, fh: usize) -> Vec<u8> {
+        let mut rgb = vec![0u8; fw * fh * 3];
+        for p in rgb.chunks_exact_mut(3) {
+            p.copy_from_slice(&BG);
+        }
+        rgb
+    }
+
+    /// 合成一帧「屏幕上开着地图」：取参考掩码的左上一块（模拟只探索了一部分，
+    /// 整张会自匹配到 1.0 反被自拍闸门拦下），按走廊色画到背景上，避开画面边缘。
+    fn frame_with_map(st: &AppState, fw: usize, fh: usize, at: (usize, usize)) -> Vec<u8> {
+        frame_with_entry(st, 0, fw, fh, at)
+    }
+
+    fn frame_with_entry(
+        st: &AppState, entry: usize, fw: usize, fh: usize, at: (usize, usize),
+    ) -> Vec<u8> {
+        ensure_lib(st).unwrap();
+        let g = st.lib.lock().unwrap();
+        let m = &g.as_ref().unwrap().entries[entry].mask;
+        let (cw, ch) = (m.w * 7 / 10, m.h * 7 / 10);
+        let mut rgb = fill(fw, fh);
+        for y in 0..ch {
+            for x in 0..cw {
+                if m.at(x, y) == 0 {
+                    continue;
+                }
+                let (px, py) = (at.0 + x, at.1 + y);
+                if px < fw && py < fh {
+                    let i = (py * fw + px) * 3;
+                    rgb[i..i + 3].copy_from_slice(&CORRIDOR);
+                }
+            }
+        }
+        rgb
+    }
+
+    #[test]
+    fn 地图消失后前端必须能收起叠加层() {
+        let st = state();
+        let (fw, fh) = (1400, 900);
+        let map = frame_with_map(&st, fw, fh, (240, 130));
+
+        let mut confident = false;
+        for i in 0..4 {
+            match run_analysis(map.clone(), fw, fh, &st).unwrap() {
+                Payload::Ok { confident: c, .. } => confident |= c,
+                // 桌面路径不存在「画面没变」的廉价采样，Skip 只可能来自自拍误判；
+                // 合成帧不该触发，真触发了说明闸门定得太松
+                Payload::Skip { hold, reason } => panic!("第 {i} 帧意外 Skip(hold={hold})：{reason}"),
+                Payload::NoPanel { reason, .. } => panic!("第 {i} 帧没认出合成地图：{reason}"),
+            }
+        }
+        assert!(confident, "连续四帧同一张地图应当锁定");
+
+        // 地图关掉。前端只有在 NoPanel 或 Ok{confident:false} 时才会收起叠加层；
+        // Skip 会让它原地不动，持续出现就是「叠加层赖着不走」。
+        let blank = fill(fw, fh);
+        for i in 0..2 {
+            match run_analysis(blank.clone(), fw, fh, &st).unwrap() {
+                Payload::NoPanel { .. } => return,
+                Payload::Ok { confident, .. } => {
+                    assert!(!confident, "地图已消失，第 {i} 帧不该仍报置信");
+                }
+                Payload::Skip { hold, reason } => {
+                    panic!("地图已消失却返回 Skip(hold={hold})，叠加层会收不起来：{reason}")
+                }
+            }
+        }
+    }
+
+    /// 换成另一张地图的那一帧：面板还在、分数却掉出门槛，跟踪器进入粘滞缓冲。
+    /// 这正是当初返回 Skip 的那条路径——Skip 意味着叠加层原地不动且不计入丢失，
+    /// 持续出现就再也收不起来。这一帧必须报成「不置信」，让前端照常倒计时。
+    #[test]
+    fn 换成另一张地图时不得返回_Skip() {
+        let st = state();
+        let (fw, fh) = (1400, 900);
+        let a = frame_with_map(&st, fw, fh, (240, 130));
+        for _ in 0..4 {
+            run_analysis(a.clone(), fw, fh, &st).unwrap();
+        }
+        // 换一个变体的地图上来
+        let other = {
+            ensure_lib(&st).unwrap();
+            let g = st.lib.lock().unwrap();
+            let lib = g.as_ref().unwrap();
+            let v0 = lib.entries[0].variant.clone();
+            lib.entries.iter().position(|e| e.variant != v0).unwrap()
+        };
+        let b = frame_with_entry(&st, other, fw, fh, (240, 130));
+        for i in 0..3 {
+            match run_analysis(b.clone(), fw, fh, &st).unwrap() {
+                Payload::Skip { hold, reason } => {
+                    panic!("第 {i} 帧返回 Skip(hold={hold})，叠加层会赖着不走：{reason}")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 手动锁定变体后，地图消失同样要能收起——锁定绕开了跟踪器，是另一条分支
+    #[test]
+    fn 锁定变体后地图消失也要能收起() {
+        let st = state();
+        let (fw, fh) = (1400, 900);
+        {
+            ensure_lib(&st).unwrap();
+            let g = st.lib.lock().unwrap();
+            let e = &g.as_ref().unwrap().entries[0];
+            *st.pin.lock().unwrap() = PinState {
+                variant: Some(e.variant.clone()),
+                floor: None,
+                name: Some(e.name.clone()),
+            };
+        }
+        let map = frame_with_map(&st, fw, fh, (240, 130));
+        match run_analysis(map, fw, fh, &st).unwrap() {
+            Payload::Ok { confident, .. } => assert!(confident, "锁定后单帧过门槛即置信"),
+            other => panic!("锁定后应当直接认出：{}", serde_json::to_string(&other).unwrap()),
+        }
+        let blank = fill(fw, fh);
+        match run_analysis(blank, fw, fh, &st).unwrap() {
+            Payload::NoPanel { .. } => {}
+            Payload::Ok { confident, .. } => assert!(!confident, "地图已消失不该仍报置信"),
+            Payload::Skip { hold, reason } => panic!("返回 Skip(hold={hold})：{reason}"),
+        }
+    }
+}
