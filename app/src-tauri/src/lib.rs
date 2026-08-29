@@ -726,6 +726,46 @@ async fn overlay_update(
         .map_err(|e| e.to_string())
 }
 
+/// Android 控制悬浮窗的一次性全量状态。手机上没有键盘，
+/// 桌面端那套全局热键在这里等价于这个窗口上的几个按钮。
+#[cfg(target_os = "android")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ControlArgs {
+    show: bool,
+    status: String,
+    overlay_on: bool,
+    map_on: bool,
+    busy: bool,
+    floor: Option<String>,
+    map_path: Option<String>,
+    map_doors: Vec<DoorOut>,
+}
+
+/// 一次带上全部状态而不是拆成几个命令：控制条上的按钮态、状态行、
+/// 整层图必须同时刷新，分开发容易出现「按钮亮了但图还没换」的中间态。
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn control_update(app: tauri::AppHandle, args: ControlArgs) -> Result<(), String> {
+    app.state::<AndroidPlugin>()
+        .0
+        .run_mobile_plugin::<serde_json::Value>("showControl", args)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 取回控制悬浮窗上攒下的按钮事件。
+/// 走轮询而不是推送：Kotlin 的 trigger 需要 JS 侧 addPluginListener，
+/// 而那条命令被 Tauri 的 ACL 拦下（应用内联插件没有权限清单可放行）。
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn poll_control(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    app.state::<AndroidPlugin>()
+        .0
+        .run_mobile_plugin("pollControl", ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn overlay_hide(app: tauri::AppHandle) -> Result<(), String> {
@@ -807,6 +847,8 @@ struct FloorMapOut {
     name: String,
     floor: String,
     draw_png: String,
+    /// 同一张图在磁盘上的路径：Android 控制悬浮窗由 Kotlin 直接读，免 base64 过桥
+    draw_path: String,
     /// 门位，已换算到手绘图自身的像素坐标
     doors: Vec<DoorOut>,
     w: u32,
@@ -842,6 +884,7 @@ fn floor_map(state: State<AppState>, variant: String, floor: String) -> Result<F
         name: e.name.clone(),
         floor,
         draw_png: B64.encode(bytes),
+        draw_path: e.draw_path.to_string_lossy().into_owned(),
         doors,
         w,
         h,
@@ -1144,7 +1187,9 @@ pub fn run() {
             capture_active,
             request_overlay_permission,
             overlay_update,
-            overlay_hide
+            overlay_hide,
+            control_update,
+            poll_control
         ]);
 
     builder

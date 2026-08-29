@@ -36,6 +36,22 @@ class DoorArg {
 }
 
 @InvokeArg
+class ControlArgs {
+    /** 是否显示控制悬浮窗 */
+    var show: Boolean = true
+    /** 状态行文字（识别进度等） */
+    var status: String = ""
+    var overlayOn: Boolean = false
+    var mapOn: Boolean = false
+    var busy: Boolean = false
+    /** 正在看的楼层（b1/1f/2f），null 表示没在看整层 */
+    var floor: String? = null
+    /** 整层手绘图路径与门位（已换算到手绘图自身坐标） */
+    var mapPath: String? = null
+    var mapDoors: List<DoorArg> = emptyList()
+}
+
+@InvokeArg
 class OverlayArgs {
     /** 手绘楼层图的绝对路径（数据包已解压到 dataDir，Kotlin 可直接读） */
     var drawPath: String = ""
@@ -78,6 +94,33 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     /** 上次画面采样指纹（含悬浮窗），仅由 peekOnWorker 写 */
     @Volatile private var lastSignature: ByteArray? = null
     private var skipStreak = 0
+
+    /**
+     * 控制悬浮窗上按下的按钮，等前端来取。
+     *
+     * 本来想用 Plugin.trigger + JS 侧 addPluginListener 推送，实测被 Tauri 的 ACL 拦下：
+     * 「Command plugin:emcapture|registerListener not allowed by ACL」——
+     * 应用内联的插件没有权限清单，没法在 capabilities 里放行。
+     * 改成前端来轮询：只在控制窗显示时轮，且一次就是个空 JSON 往返，
+     * 与真正吃 CPU 的识别（1-2 秒）比可以忽略。
+     */
+    private val pendingActions = java.util.concurrent.ConcurrentLinkedQueue<Pair<String, String?>>()
+
+    @Command
+    fun pollControl(invoke: Invoke) {
+        val arr = app.tauri.plugin.JSArray()
+        while (true) {
+            val (action, value) = pendingActions.poll() ?: break
+            val o = JSObject()
+            o.put("action", action)
+            if (value != null) o.put("value", value)
+            arr.put(o)
+        }
+        val ret = JSObject()
+        ret.put("actions", arr)
+        ret.put("shown", controlView != null)
+        invoke.resolve(ret)
+    }
 
     /** 是否已获得投屏授权（授权在停止投屏后失效，需重新申请） */
     @Command
@@ -414,10 +457,85 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     // -----------------------------------------------------------------------
-    // 悬浮窗：叠加显示在游戏之上
+    // 悬浮窗：叠加层（不可触摸，穿透到游戏）+ 控制条（可触摸）
     // -----------------------------------------------------------------------
 
     private var overlayView: OverlayView? = null
+    private var controlView: ControlView? = null
+    private var controlLp: WindowManager.LayoutParams? = null
+
+    /**
+     * 控制悬浮窗：手机上没有键盘，桌面端那套全局热键在这里等价于几个按钮。
+     * 按钮事件经 trigger 送回前端（JS 侧 addPluginListener("emcapture", "control")），
+     * 由前端复用与桌面完全相同的那套动作逻辑，不在 Kotlin 里另起一套。
+     */
+    @Command
+    fun showControl(invoke: Invoke) {
+        val args = invoke.parseArgs(ControlArgs::class.java)
+        if (!Settings.canDrawOverlays(activity)) {
+            invoke.reject("尚未授予悬浮窗权限")
+            return
+        }
+        activity.runOnUiThread {
+            try {
+                val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                if (!args.show) {
+                    controlView?.let { runCatching { wm.removeView(it) } }
+                    controlView = null
+                    controlLp = null
+                    invoke.resolve(JSObject())
+                    return@runOnUiThread
+                }
+                var view = controlView
+                if (view == null) {
+                    val lp = WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                        // 只加 NOT_FOCUSABLE：这个窗口要收下自己范围内的触摸
+                        //（这正是它与叠加层必须分成两个窗口的原因），
+                        // 但不抢焦点，游戏的其余部分照常操作
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        PixelFormat.TRANSLUCENT
+                    )
+                    lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        lp.layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    }
+                    val (sw, sh) = screenSize()
+                    lp.x = sw / 20
+                    lp.y = sh / 12
+                    val v = ControlView(activity) { action, value ->
+                        pendingActions.add(action to value)
+                    }
+                    v.onDrag = { dx, dy ->
+                        controlLp?.let { p ->
+                            p.x += dx
+                            p.y += dy
+                            runCatching { wm.updateViewLayout(v, p) }
+                        }
+                    }
+                    wm.addView(v, lp)
+                    controlView = v
+                    controlLp = lp
+                    view = v
+                }
+                view.setStatus(args.status)
+                view.setFlags(args.overlayOn, args.mapOn, args.busy)
+                view.setFloor(args.floor)
+                val (sw, sh) = screenSize()
+                // 整层图等比缩放的上限：宽不超过屏幕的 2/3，高不超过一半，
+                // 免得把游戏画面整个盖住
+                view.setMap(args.mapPath, args.mapDoors, sw * 2 / 3, sh / 2)
+                invoke.resolve(JSObject())
+            } catch (e: Exception) {
+                Log.e("EmberMap", "控制悬浮窗失败", e)
+                invoke.reject(e.message ?: "控制悬浮窗失败")
+            }
+        }
+    }
 
     @Command
     fun hasOverlayPermission(invoke: Invoke) {
@@ -500,6 +618,18 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
                 Log.e("EmberMap", "悬浮窗显示失败", e)
                 invoke.reject(e.message ?: "悬浮窗显示失败")
             }
+        }
+    }
+
+    /** 应用被销毁时把两个悬浮窗都摘掉，否则会留在屏幕上摘不掉 */
+    override fun onDestroy() {
+        activity.runOnUiThread {
+            val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            overlayView?.let { runCatching { wm.removeView(it) } }
+            controlView?.let { runCatching { wm.removeView(it) } }
+            overlayView = null
+            controlView = null
+            controlLp = null
         }
     }
 

@@ -40,6 +40,9 @@ header {
 #pinstate { color: #e3b341; font-size: 12px; }
 #hotkeybar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
              margin-top: 8px; font-size: 13px; color: #8b96a3; }
+/* display 会盖掉 hidden 属性自带的 display:none（UA 样式优先级更低），
+   不补这条的话热键栏在 Android 上照样显示出来 */
+#hotkeybar[hidden] { display: none; }
 #hotkeybar button {
   background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
   border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;

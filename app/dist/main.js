@@ -248,6 +248,164 @@ function initIdleUi() {
 }
 
 // ---------------------------------------------------------------------------
+// Android 控制悬浮窗
+//
+// 手机上没有键盘，桌面那套全局热键在这里等价于悬浮窗上的按钮；
+// 而且默认**不开自动监测**——手机上每轮识别 1-2 秒，一直转确实卡，
+// 由用户按一下再识别更合适，代价是必须把进度显示清楚。
+// ---------------------------------------------------------------------------
+const BURST_MAX = 6;   // 一次「抓屏匹配」最多连拍几帧（够攒到锁定，又不至于卡太久）
+let ctrl = { shown: false, mapOn: false, floor: null, busy: false, status: "" };
+
+async function syncControl() {
+  if (!ctrl.shown) return;
+  const key = ctrl.mapOn && ctrl.floor ? `${viewVariant()}|${ctrl.floor}` : null;
+  const m = key ? viewCache[key] : null;
+  try {
+    await invoke("control_update", {
+      args: {
+        show: true,
+        status: ctrl.status,
+        overlayOn: overlayMode,
+        mapOn: ctrl.mapOn,
+        busy: ctrl.busy,
+        floor: ctrl.floor,
+        // 传路径不传 base64：整层图有几百 KB，走 JSON 桥不划算，
+        // 与叠加层同一套理由
+        mapPath: m ? m.draw_path : null,
+        mapDoors: m ? m.doors : [],
+      },
+    });
+  } catch (e) {
+    setStatus(String(e), "warn");
+  }
+}
+
+/// 轮询控制悬浮窗上按下的按钮。
+///
+/// 只在控制窗显示时转，一轮就是个空 JSON 往返，与真正吃 CPU 的识别
+/// （手机上 1-2 秒）比可以忽略；用户嫌卡的是后者，不是这个。
+/// 之所以轮询而非推送：Kotlin 的 trigger 要求 JS 侧 addPluginListener，
+/// 那条命令被 Tauri 的 ACL 拦下（应用内联插件没有权限清单可放行）。
+const CTRL_POLL = 250;
+let ctrlPolling = false;
+
+async function controlLoop() {
+  if (ctrlPolling) return;
+  ctrlPolling = true;
+  try {
+    while (ctrl.shown) {
+      try {
+        const r = await invoke("poll_control");
+        if (!r.shown) { ctrl.shown = false; break; }
+        for (const a of r.actions || []) await onControlAction(a.action, a.value);
+      } catch { /* 投屏停了之类，下一轮自然退出 */ }
+      await sleep(CTRL_POLL);
+    }
+  } finally {
+    ctrlPolling = false;
+  }
+}
+
+async function hideControl() {
+  ctrl.shown = false;
+  try {
+    await invoke("control_update", {
+      args: { show: false, status: "", overlayOn: false, mapOn: false,
+              busy: false, floor: null, mapPath: null, mapDoors: [] },
+    });
+  } catch { /* 已经没了就算了 */ }
+}
+
+/// 手动识别：连拍若干帧直到锁定。
+/// 单帧往往攒不够证据（跟踪器要多帧印证），一次只测一帧会让用户以为没反应，
+/// 所以按一下就连拍到锁定为止，每帧刷新进度。
+async function burstCapture() {
+  if (ctrl.busy) return;
+  ctrl.busy = true;
+  let ok = false;
+  for (let i = 1; i <= BURST_MAX && !ok; i++) {
+    ctrl.status = `识别中 ${i}/${BURST_MAX}…`;
+    await syncControl();
+    const r = await analyzeOnce(false);
+    if (r === "hit") ok = true;
+    else if (r === "miss") {
+      ctrl.status = "画面里没找到地图，把游戏地图完整打开再试";
+      break;
+    }
+  }
+  if (ok && lastPayload) {
+    ctrl.status = `${lastPayload.name} · ${floorCn(lastPayload.floor)}　置信 ${lastPayload.score.toFixed(2)}`;
+    // 认出来了才知道是哪张图，整层视图这时才有内容可显示
+    if (ctrl.mapOn && !ctrl.floor) ctrl.floor = lastPayload.floor;
+    if (ctrl.mapOn) await ensureFloorCached(ctrl.floor);
+  } else if (ctrl.status.startsWith("识别中")) {
+    ctrl.status = "证据不足，再按一次或把地图放大些";
+  }
+  ctrl.busy = false;
+  await syncControl();
+}
+
+/// 整层图取回来放进缓存，控制窗从缓存里拿路径
+async function ensureFloorCached(floor) {
+  const variant = viewVariant();
+  if (!variant || !floor) return false;
+  const key = `${variant}|${floor}`;
+  const keys = Object.keys(viewCache);
+  if (keys.length > 4 && !viewCache[key]) delete viewCache[keys[0]];
+  try {
+    viewCache[key] ||= await invoke("floor_map", { variant, floor });
+    return true;
+  } catch (e) {
+    ctrl.status = String(e);
+    return false;
+  }
+}
+
+async function onControlAction(action, value) {
+  switch (action) {
+    case "capture":
+      await burstCapture();
+      return;
+    case "toggle_overlay": {
+      const box = $("chk-overlay");
+      box.checked = !box.checked;
+      box.dispatchEvent(new Event("change"));
+      // change 处理是异步的，等一拍再回读，免得按钮态反着显示
+      await sleep(0);
+      ctrl.status = overlayMode ? "叠加层开" : "叠加层关";
+      break;
+    }
+    case "toggle_map":
+      ctrl.mapOn = !ctrl.mapOn;
+      if (ctrl.mapOn) {
+        if (!viewVariant()) {
+          ctrl.mapOn = false;
+          ctrl.status = "还没认出是哪张图，先按「抓屏匹配」";
+        } else {
+          ctrl.floor = ctrl.floor || lastPayload?.floor || "1f";
+          if (!(await ensureFloorCached(ctrl.floor))) ctrl.mapOn = false;
+        }
+      }
+      break;
+    case "floor":
+      ctrl.floor = value;
+      if (!(await ensureFloorCached(value))) ctrl.mapOn = false;
+      break;
+    case "reset":
+      await invoke("reset_lock");
+      shownKey = null;
+      ctrl.status = "已清除锁定，下次全库重扫";
+      break;
+    case "close":
+      await hideOverlay();
+      await hideControl();
+      return;
+  }
+  await syncControl();
+}
+
+// ---------------------------------------------------------------------------
 // 全局热键自定义（仅桌面）
 //
 // 后端用的加速键写法是「修饰键在前、键码在后」，键码名与浏览器
@@ -471,7 +629,9 @@ async function analyzeOnce(auto) {
         "warn"
       );
       renderCandidates(p.candidates);
-      return "hit"; // 面板在，保持快节奏继续攒证据
+      // weak：面板在但证据不够。对循环而言与命中同义（保持快节奏继续攒证据），
+      // 但手动突发识别要靠它区分「还得再来一帧」和「可以收手了」
+      return "weak";
     }
     lowConfMiss = 0;
     shownKey = key;
@@ -513,7 +673,7 @@ async function watchLoop() {
   while (watching) {
     const r = await analyzeOnce(true);
     // skip 既不算命中也不算落空：画面没动，上一轮的判断依然成立
-    if (r !== "skip") misses = r === "hit" ? 0 : misses + 1;
+    if (r !== "skip") misses = r === "hit" || r === "weak" ? 0 : misses + 1;
     const iv = idles();
     let idle = iv.fast;
     if (r === "skip") idle = iv.peek;
@@ -556,6 +716,7 @@ $("chk-overlay").addEventListener("change", async (ev) => {
   } else {
     await hideOverlay();
   }
+  await syncControl(); // 控制条上的「叠加」按钮态跟着走
 });
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
 $("rng-alpha").addEventListener("input", () => {
@@ -620,12 +781,17 @@ listen("hotkey", async (ev) => {
     // Android：先授权投屏才能取帧；按钮兼作开关，随时可停
     const grant = $("btn-grant");
     grant.hidden = false;
+    // 默认不开自动监测：手机上每轮识别 1-2 秒，一直转确实卡，
+    // 改由悬浮窗上的「抓屏匹配」按需触发
     $("chk-watch").checked = false;
+    watching = false;
     setStatus("请先点「授权投屏」，然后切到游戏打开地图", "warn");
+
 
     captureStopped = async (reason) => {
       watching = false;
       await hideOverlay();
+      await hideControl();
       $("chk-watch").checked = false;
       grant.textContent = "授权投屏";
       grant.disabled = false;
@@ -646,10 +812,18 @@ listen("hotkey", async (ev) => {
         capturing = true;
         grant.textContent = "停止投屏";
         grant.disabled = false;
-        $("chk-watch").checked = true;
-        watching = true;
-        setStatus("自动监测中——切到游戏打开地图即自动识别");
-        watchLoop();
+        // 悬浮窗权限是控制条的前提；没给就退回应用内操作
+        let canFloat = false;
+        try { canFloat = await invoke("request_overlay_permission"); } catch { /* 下面提示 */ }
+        if (canFloat) {
+          ctrl = { shown: true, mapOn: false, floor: null, busy: false,
+                   status: "切到游戏打开地图，按「抓屏匹配」" };
+          await syncControl();
+          controlLoop();
+          setStatus("控制悬浮窗已就绪——切到游戏，用悬浮窗上的按钮操作", "ok");
+        } else {
+          setStatus("未获得悬浮窗权限，只能在应用内点「抓屏匹配」", "warn");
+        }
       } catch (e) {
         grant.disabled = false;
         setStatus(String(e), "warn");
