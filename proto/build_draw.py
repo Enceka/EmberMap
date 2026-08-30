@@ -18,11 +18,16 @@ from build_library import preview  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_DIR = os.path.join(ROOT, "build", "library-draw")
 PREV_DIR = os.path.join(ROOT, "build", "preview-draw")
+OVERRIDES_PATH = os.path.join(ROOT, "data", "floor_overrides.json")
 
 
 def main():
     os.makedirs(LIB_DIR, exist_ok=True)
     os.makedirs(PREV_DIR, exist_ok=True)
+    overrides = {}
+    if os.path.exists(OVERRIDES_PATH):
+        with open(OVERRIDES_PATH) as f:
+            overrides = json.load(f)
     with open(os.path.join(ROOT, "data", "variants.json")) as f:
         names = json.load(f)["draw"]
 
@@ -31,8 +36,11 @@ def main():
         stem = os.path.splitext(os.path.basename(path))[0]
         img = cv2.imread(path)
         mask = emlib.structure_mask(img, "draw")
-        floors = emlib.split_floors(mask)
-        fnames = emlib.label_floors(floors)
+        if stem in overrides:
+            floors, fnames = emlib.split_floors_by_rects(mask, overrides[stem])
+        else:
+            floors = emlib.split_floors(mask)
+            fnames = emlib.label_floors(floors)
         preview(img, mask, floors, fnames, os.path.join(PREV_DIR, f"{stem}.jpg"))
 
         vid = f"dw-{stem[:8]}"
