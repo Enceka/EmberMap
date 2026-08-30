@@ -18,6 +18,8 @@
       <label><input type="checkbox" id="chk-watch" checked /> 自动监测</label>
       <!-- 默认不勾：叠加层会盖在游戏画面上，该不该出现由用户决定 -->
       <label><input type="checkbox" id="chk-overlay" /> 叠加层</label>
+      <!-- Android 专用：控制悬浮窗开不开由用户定，不再授权投屏后强制弹出 -->
+      <label id="lbl-control" hidden><input type="checkbox" id="chk-control" /> 控制悬浮窗</label>
       <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
       <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
       <label>叠加层不透明度
@@ -51,6 +53,14 @@
     <div id="hint"></div>
   </header>
   <main>
+    <!-- 画布缩放：识别预览与「看整层」共用，倍率记到 localStorage -->
+    <div id="viewbar">
+      <button id="zoom-out" title="缩小">−</button>
+      <span id="zoom-val">100%</span>
+      <button id="zoom-in" title="放大">＋</button>
+      <button id="zoom-fit" title="恢复适应宽度">适应</button>
+      <span id="zoom-hint">Ctrl/⌘+滚轮或双指捏合；双击画布在适应与放大间切换</span>
+    </div>
     <canvas id="view"></canvas>
     <ul id="candidates"></ul>
     <!-- 叠加层几何：真机排障时用户拍一张就能对账，省一次「装包→复现」往返 -->

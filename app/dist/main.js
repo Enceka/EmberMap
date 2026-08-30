@@ -108,6 +108,100 @@ function renderGeom(p, shotW) {
 }
 
 // ---------------------------------------------------------------------------
+// 画布缩放：识别预览与「看整层」共用这块画布。
+//
+// 有的地图窄长、有的几乎正方形，宽度铺满时小地图看不清门位标注，
+// 长图又要来回滚——缩放交给用户自己调：Ctrl/⌘+滚轮（触控板捏合同此）、
+// 双指捏合、按钮皆可，双击画布在「适应宽度」与上次放大倍率之间切换。
+// 倍率记到 localStorage，识别预览与整层视图共用同一档。
+// ---------------------------------------------------------------------------
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 6;
+let viewZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(localStorage.getItem("em_viewzoom")) || 1));
+let zoomLast = 2.5;   // 双击切换用的「放大档」，跟随用户最近一次放大到的倍率
+
+function applyZoom() {
+  canvas.style.width = viewZoom === 1 ? "" : `${viewZoom * 100}%`;
+  $("zoom-val").textContent = `${Math.round(viewZoom * 100)}%`;
+  localStorage.setItem("em_viewzoom", String(viewZoom));
+}
+
+/// 以屏幕点 (cx, cy) 为锚缩放：缩放前后这个点压住的内容不变
+function zoomAt(cx, cy, factor) {
+  const scroller = canvas.closest("main");
+  const rect = canvas.getBoundingClientRect();
+  const fx = (cx - rect.left) / rect.width;
+  const fy = (cy - rect.top) / rect.height;
+  const prev = viewZoom;
+  viewZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, viewZoom * factor));
+  if (viewZoom === prev) return;
+  if (viewZoom > 1.01) zoomLast = viewZoom;
+  applyZoom();
+  // 按新旧矩形之差补正滚动，锚点下的内容保持在指针处
+  const r2 = canvas.getBoundingClientRect();
+  scroller.scrollLeft += fx * r2.width - (cx - r2.left);
+  scroller.scrollTop += fy * r2.height - (cy - r2.top);
+}
+
+function zoomCenter(factor) {
+  const sc = canvas.closest("main");
+  const r = sc.getBoundingClientRect();
+  zoomAt(r.left + r.width / 2, r.top + Math.min(r.height, window.innerHeight) / 2, factor);
+}
+
+function initZoomUi() {
+  applyZoom();
+  $("zoom-in").addEventListener("click", () => zoomCenter(1.25));
+  $("zoom-out").addEventListener("click", () => zoomCenter(0.8));
+  $("zoom-fit").addEventListener("click", () => { viewZoom = 1; applyZoom(); });
+  // 触控板捏合以 Ctrl+滚轮的形式上报；普通滚轮仍留给页面滚动
+  canvas.addEventListener("wheel", (ev) => {
+    if (!ev.ctrlKey && !ev.metaKey) return;
+    ev.preventDefault();
+    zoomAt(ev.clientX, ev.clientY, Math.exp(-ev.deltaY * 0.0025));
+  }, { passive: false });
+  // 触屏：双指捏合缩放（#view 的 touch-action: pan-y 保证手势事件到 JS）；
+  // 放大后单指横向拖动，纵向仍走原生滚动
+  let pinch = null;
+  let pan = null;
+  const touchDist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  canvas.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length === 2) {
+      pinch = { d: touchDist(ev.touches),
+                cx: (ev.touches[0].clientX + ev.touches[1].clientX) / 2,
+                cy: (ev.touches[0].clientY + ev.touches[1].clientY) / 2 };
+      pan = null;
+    } else if (ev.touches.length === 1 && viewZoom > 1) {
+      pan = { x: ev.touches[0].clientX, sl: canvas.closest("main").scrollLeft };
+    }
+  }, { passive: false });
+  canvas.addEventListener("touchmove", (ev) => {
+    if (pinch && ev.touches.length === 2) {
+      ev.preventDefault();
+      const d = touchDist(ev.touches);
+      zoomAt(pinch.cx, pinch.cy, d / pinch.d);
+      pinch.d = d;
+      pinch.cx = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
+      pinch.cy = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
+    } else if (pan && ev.touches.length === 1 && viewZoom > 1) {
+      canvas.closest("main").scrollLeft = pan.sl - (ev.touches[0].clientX - pan.x);
+    }
+  }, { passive: false });
+  const endTouch = (ev) => {
+    if (ev.touches.length < 2) pinch = null;
+    if (ev.touches.length === 0) pan = null;
+  };
+  canvas.addEventListener("touchend", endTouch);
+  canvas.addEventListener("touchcancel", endTouch);
+  canvas.addEventListener("dblclick", () => {
+    const sc = canvas.closest("main");
+    const r = sc.getBoundingClientRect();
+    if (viewZoom > 1.01) zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / viewZoom);
+    else zoomAt(r.left + r.width / 2, r.top + r.height / 2, zoomLast);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 锁定地图 + 看整层
 //
 // 两件互相独立的事，别混为一谈：
@@ -256,6 +350,28 @@ function initIdleUi() {
 // ---------------------------------------------------------------------------
 const BURST_MAX = 6;   // 一次「抓屏匹配」最多连拍几帧（够攒到锁定，又不至于卡太久）
 let ctrl = { shown: false, mapOn: false, floor: null, busy: false, status: "" };
+// 控制悬浮窗是否要显示由用户决定（记到 localStorage），不再授权投屏后强制弹出——
+// 强制弹出既越权，也是「有时候崩溃」时用户唯一的直接接触面。
+let controlWanted = localStorage.getItem("em_control") === "1";
+
+/// 打开控制悬浮窗：先确保悬浮窗权限，再显示并启动按钮轮询
+async function openControl() {
+  try {
+    const ok = await invoke("request_overlay_permission");
+    if (!ok) throw new Error("未获得悬浮窗权限");
+  } catch (e) {
+    controlWanted = false;
+    $("chk-control").checked = false;
+    localStorage.setItem("em_control", "0");
+    setStatus(String(e), "warn");
+    return;
+  }
+  ctrl = { shown: true, mapOn: false, floor: null, busy: false,
+           status: "切到游戏打开地图，按「抓屏匹配」" };
+  await syncControl();
+  controlLoop();
+  setStatus("控制悬浮窗已显示——拖到屏幕边缘可收起成小柄，点小柄展开", "ok");
+}
 
 async function syncControl() {
   if (!ctrl.shown) return;
@@ -406,8 +522,11 @@ async function onControlAction(action, value) {
       ctrl.status = "已清除锁定，下次全库重扫";
       break;
     case "close":
-      await hideOverlay();
+      // ✕ 只收控制条本身；叠加层有自己的开关（应用内勾选框 / 通知栏），不连坐
       await hideControl();
+      controlWanted = false;
+      $("chk-control").checked = false;
+      localStorage.setItem("em_control", "0");
       return;
   }
   await syncControl();
@@ -777,6 +896,7 @@ listen("hotkey", async (ev) => {
 
   await initPinUi();
   initIdleUi();
+  initZoomUi();
   if (caps.hotkeys) await initHotkeyUi();
   else $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
 
@@ -784,6 +904,28 @@ listen("hotkey", async (ev) => {
     // Android：悬浮窗由系统权限管控，勾选时按需申请
     $("chk-top").disabled = true;
     $("chk-top").closest("label")?.style.setProperty("opacity", "0.4");
+    // 控制悬浮窗开关：默认不显示，用户随时可在应用内收放
+    controlWanted = localStorage.getItem("em_control") === "1";
+    $("chk-control").checked = controlWanted;
+    $("lbl-control").hidden = false;
+    $("chk-control").addEventListener("change", async (ev) => {
+      controlWanted = ev.target.checked;
+      localStorage.setItem("em_control", controlWanted ? "1" : "0");
+      if (!controlWanted) {
+        await hideControl();
+        setStatus("控制悬浮窗已收起；通知栏的「开关叠加层」仍可用");
+        return;
+      }
+      if (!capturing) {
+        // 控制条上的按钮全部依赖投屏画面；没有投屏，开了也只是个空壳
+        ev.target.checked = false;
+        controlWanted = false;
+        localStorage.setItem("em_control", "0");
+        setStatus("控制悬浮窗要先有投屏画面：请先点「授权投屏」", "warn");
+        return;
+      }
+      await openControl();
+    });
     overlayMode = localStorage.getItem("em_overlay") === "1";
     $("chk-overlay").checked = overlayMode;
     $("chk-overlay").addEventListener("change", async (ev) => {
@@ -838,18 +980,10 @@ listen("hotkey", async (ev) => {
         capturing = true;
         grant.textContent = "停止投屏";
         grant.disabled = false;
-        // 悬浮窗权限是控制条的前提；没给就退回应用内操作
-        let canFloat = false;
-        try { canFloat = await invoke("request_overlay_permission"); } catch { /* 下面提示 */ }
-        if (canFloat) {
-          ctrl = { shown: true, mapOn: false, floor: null, busy: false,
-                   status: "切到游戏打开地图，按「抓屏匹配」" };
-          await syncControl();
-          controlLoop();
-          setStatus("控制悬浮窗已就绪——切到游戏，用悬浮窗上的按钮操作", "ok");
-        } else {
-          setStatus("未获得悬浮窗权限，只能在应用内点「抓屏匹配」", "warn");
-        }
+        // 控制悬浮窗不再自动弹出：用户之前勾了「控制悬浮窗」才恢复显示，
+        // 否则留在应用内操作（抓屏匹配按钮一直在）
+        if (controlWanted) await openControl();
+        else setStatus("投屏已就绪。控制悬浮窗默认不显示，需要时勾选「控制悬浮窗」", "ok");
       } catch (e) {
         grant.disabled = false;
         setStatus(String(e), "warn");

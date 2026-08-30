@@ -7,6 +7,8 @@ body {
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  /* 禁掉双击页面缩放，双击留给画布的「适应 ↔ 放大」切换 */
+  touch-action: manipulation;
 }
 /* 安全区：Android 边到边显示时，内容会被状态栏/挖孔/手势条压住。
    桌面端 env() 全为 0，不受影响。 */
@@ -56,7 +58,15 @@ main {
   padding: 10px calc(10px + env(safe-area-inset-right))
            calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
 }
-#view { width: 100%; background: #0c0f14; border-radius: 8px; display: block; }
+#viewbar { display: flex; gap: 8px; align-items: center; padding: 0 4px 6px; font-size: 12px; color: #6f7b88; }
+#viewbar button {
+  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
+  border-radius: 6px; padding: 3px 10px; font-size: 13px; cursor: pointer;
+}
+#viewbar button:active { border-color: #2d7ff9; color: #2d7ff9; }
+#zoom-val { min-width: 44px; text-align: center; color: #9aa6b2; font-variant-numeric: tabular-nums; }
+/* pan-y：纵向滚动交给系统；横向拖动与双指捏合由 JS 处理（见 main.js 画布缩放） */
+#view { width: 100%; background: #0c0f14; border-radius: 8px; display: block; touch-action: pan-y; }
 #candidates { list-style: none; padding: 8px 4px; font-size: 13px; color: #9aa6b2; }
 #candidates li.best { color: #7ee787; }
 #geom { padding: 0 4px 10px; font: 11px ui-monospace, Menlo, monospace; color: #6e7681; word-break: break-all; }

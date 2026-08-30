@@ -41,6 +41,43 @@ class ControlView(
 
     /** 拖动窗口用：由外部（插件）在回调里改 WindowManager.LayoutParams */
     var onDrag: ((dx: Int, dy: Int) -> Unit)? = null
+    /** 一段拖动结束（松手）：插件据此判断是否贴边收起 */
+    var onDragEnd: (() -> Unit)? = null
+    /** 收起态下点小柄：请求展开 */
+    var onExpandRequest: (() -> Unit)? = null
+
+    private var collapsed = false
+    private var mapOn = false
+    private lateinit var pill: TextView
+    private lateinit var row: LinearLayout
+    private var downX = 0f
+    private var downY = 0f
+    private var moved = 0f
+    private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+
+    /** 拖动把手 / 收起态小柄共用的触摸处理。
+     *  isPill：小柄上松手且几乎没移动 = 点按，请求展开；真正拖动过才报 onDragEnd。 */
+    private fun dragTouch(isPill: Boolean) = android.view.View.OnTouchListener { _, ev ->
+        when (ev.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                downX = ev.rawX; downY = ev.rawY; moved = 0f; true
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                val dx = ev.rawX - downX
+                val dy = ev.rawY - downY
+                onDrag?.invoke(dx.toInt(), dy.toInt())
+                moved += kotlin.math.abs(dx) + kotlin.math.abs(dy)
+                downX = ev.rawX; downY = ev.rawY
+                true
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                if (moved >= touchSlop) onDragEnd?.invoke()
+                else if (isPill && ev.action == android.view.MotionEvent.ACTION_UP) onExpandRequest?.invoke()
+                true
+            }
+            else -> true
+        }
+    }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -79,7 +116,7 @@ class ControlView(
             setStroke(dp(1), Color.argb(0x80, 0x3a, 0x45, 0x53))
         }
 
-        val row = LinearLayout(context).apply { orientation = HORIZONTAL }
+        row = LinearLayout(context).apply { orientation = HORIZONTAL }
         addView(row, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
         // 拖动把手：按住它挪窗口。放在最左边，误触概率最低
@@ -91,20 +128,7 @@ class ControlView(
             setPadding(dp(6), 0, dp(8), 0)
             minimumHeight = dp(34)
         }
-        var downX = 0f
-        var downY = 0f
-        handle.setOnTouchListener { _, ev ->
-            when (ev.action) {
-                android.view.MotionEvent.ACTION_DOWN -> {
-                    downX = ev.rawX; downY = ev.rawY; true
-                }
-                android.view.MotionEvent.ACTION_MOVE -> {
-                    onDrag?.invoke((ev.rawX - downX).toInt(), (ev.rawY - downY).toInt())
-                    downX = ev.rawX; downY = ev.rawY; true
-                }
-                else -> true
-            }
-        }
+        handle.setOnTouchListener(dragTouch(false))
         row.addView(handle)
 
         btnShoot = mkButton("抓屏匹配") { onAction("capture", null) }
@@ -148,6 +172,20 @@ class ControlView(
         addView(mapView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(6)
         })
+
+        // 收起态小柄：控制条被拖到屏幕边缘时缩成它，点一下展开回完整控制条
+        pill = TextView(context).apply {
+            text = "⋮⋮"
+            textSize = 15f
+            setTextColor(Color.rgb(0x9f, 0xdc, 0xff))
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            minimumWidth = dp(34)
+            minimumHeight = dp(34)
+            setOnTouchListener(dragTouch(true))
+        }
+        addView(pill, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+        pill.visibility = GONE
     }
 
     fun setStatus(text: String) {
@@ -155,14 +193,29 @@ class ControlView(
     }
 
     fun setFlags(overlayOn: Boolean, mapOn: Boolean, busy: Boolean) {
+        this.mapOn = mapOn
         btnOverlay.text = if (overlayOn) "叠加层 开" else "叠加层 关"
         btnMap.text = if (mapOn) "整层 开" else "整层 关"
         setOn(btnOverlay, overlayOn)
         setOn(btnMap, mapOn)
         btnShoot.isEnabled = !busy
         btnShoot.alpha = if (busy) 0.5f else 1f
-        floorRow.visibility = if (mapOn) VISIBLE else GONE
-        mapView.visibility = if (mapOn) VISIBLE else GONE
+        // 收起态下隐藏全部内容行，只留小柄；展开时按 mapOn 恢复
+        floorRow.visibility = if (!collapsed && mapOn) VISIBLE else GONE
+        mapView.visibility = if (!collapsed && mapOn) VISIBLE else GONE
+    }
+
+    /** 贴边收起：只剩一个小柄。拖到屏幕边缘松手即收起（插件侧触发），点小柄展开。 */
+    fun setCollapsed(c: Boolean) {
+        collapsed = c
+        row.visibility = if (c) GONE else VISIBLE
+        statusText.visibility = if (c) GONE else VISIBLE
+        floorRow.visibility = if (!c && mapOn) VISIBLE else GONE
+        mapView.visibility = if (!c && mapOn) VISIBLE else GONE
+        pill.visibility = if (c) VISIBLE else GONE
+        val pad = if (c) dp(2) else dp(8)
+        setPadding(pad, pad, pad, pad)
+        (background as GradientDrawable).cornerRadius = dp(if (c) 20 else 12).toFloat()
     }
 
     /** 高亮当前正在看的楼层 */
@@ -179,7 +232,9 @@ class ControlView(
     }
 
     /**
-     * 整层手绘图，等比缩放到卡片宽度以内、且不超过给定高度。
+     * 整层手绘图：先等比适配到卡片内（宽 ≤ 屏 2/3、高 ≤ 屏一半），
+     * 用户可双指捏合继续放大、拖动查看，双击在适配与放大之间切换——
+     * 适配大小对小地图来说字太小，是「整层看得见但看不清」的解法。
      * 与叠加层不同，这里不做任何对齐——就是把整层原样摊开给用户看，
      * 解决「游戏里地图放大后看不到别处」。
      */
@@ -189,7 +244,10 @@ class ControlView(
         private var doors: List<DoorArg> = emptyList()
         private var boxW = 0
         private var boxH = 0
-        private var scale = 1f
+        private var fit = 1f      // 适配倍率：整图缩进卡片
+        private var zoom = 1f     // 用户倍率：1 = 适配，最大 8
+        private var panX = 0f     // 平移（视图像素）：把放大后的内容挪进可视区
+        private var panY = 0f
 
         private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
         private val doorStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -208,6 +266,98 @@ class ControlView(
             textSize = 22f
         }
 
+        private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+
+        private fun total() = fit * zoom
+
+        private fun clampPan() {
+            val b = bmp ?: return
+            val t = total()
+            panX = panX.coerceIn(0f, (b.width * t - width).coerceAtLeast(0f))
+            panY = panY.coerceIn(0f, (b.height * t - height).coerceAtLeast(0f))
+        }
+
+        /** 以视图点 (fx, fy) 为锚改缩放：锚点下的内容保持不动 */
+        private fun zoomAt(fx: Float, fy: Float, target: Float) {
+            val prev = total()
+            zoom = target.coerceIn(1f, 8f)
+            val now = total()
+            if (now == prev) return
+            panX = (fx + panX) * now / prev - fx
+            panY = (fy + panY) * now / prev - fy
+            clampPan()
+            invalidate()
+        }
+
+        private val scaleDetector = android.view.ScaleGestureDetector(
+            context,
+            object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+                    val prev = total()
+                    zoom = (zoom * d.scaleFactor).coerceIn(1f, 8f)
+                    val now = total()
+                    if (now != prev) {
+                        panX = (d.focusX + panX) * now / prev - d.focusX
+                        panY = (d.focusY + panY) * now / prev - d.focusY
+                        clampPan()
+                        invalidate()
+                    }
+                    return true
+                }
+            }
+        )
+
+        private var panPt: android.graphics.PointF? = null
+        private var downX = 0f
+        private var downY = 0f
+        private var downAt = 0L
+        private var lastTapAt = 0L
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(ev: android.view.MotionEvent): Boolean {
+            scaleDetector.onTouchEvent(ev)
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x; downY = ev.y
+                    downAt = android.os.SystemClock.uptimeMillis()
+                    panPt = if (zoom > 1f) android.graphics.PointF(ev.x, ev.y) else null
+                }
+                android.view.MotionEvent.ACTION_POINTER_DOWN -> panPt = null
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val pt = panPt
+                    if (pt != null && !scaleDetector.isInProgress) {
+                        panX -= ev.x - pt.x
+                        panY -= ev.y - pt.y
+                        pt.set(ev.x, ev.y)
+                        clampPan()
+                        invalidate()
+                    }
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    val moved = kotlin.math.hypot(ev.x - downX, ev.y - downY)
+                    val quick = ev.actionMasked == android.view.MotionEvent.ACTION_UP &&
+                        android.os.SystemClock.uptimeMillis() - downAt < 250
+                    if (quick && moved < touchSlop) {
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (now - lastTapAt < 320) {
+                            // 双击：适配 ↔ 放大
+                            lastTapAt = 0L
+                            if (zoom > 1f) {
+                                zoom = 1f; panX = 0f; panY = 0f
+                            } else {
+                                zoomAt(ev.x, ev.y, 2.5f)
+                            }
+                            invalidate()
+                        } else {
+                            lastTapAt = now
+                        }
+                    }
+                    panPt = null
+                }
+            }
+            return true
+        }
+
         fun load(path: String?, d: List<DoorArg>, maxW: Int, maxH: Int) {
             boxW = maxW
             boxH = maxH
@@ -218,6 +368,10 @@ class ControlView(
             } else if (path != loaded) {
                 bmp = BitmapFactory.decodeFile(path)
                 loaded = path
+                // 换了图，视图状态回适配；缩放与平移都按新图算
+                zoom = 1f
+                panX = 0f
+                panY = 0f
             }
             requestLayout()
             invalidate()
@@ -229,15 +383,17 @@ class ControlView(
                 setMeasuredDimension(0, 0)
                 return
             }
-            // 等比缩放：宽高各自算一个系数，取小的那个，保证整张都进得来
-            scale = minOf(boxW.toFloat() / b.width, boxH.toFloat() / b.height)
-            setMeasuredDimension((b.width * scale).toInt(), (b.height * scale).toInt())
+            // 等比适配：宽高各自算一个系数，取小的那个，保证整张都进得来
+            fit = minOf(boxW.toFloat() / b.width, boxH.toFloat() / b.height)
+            setMeasuredDimension((b.width * fit).toInt(), (b.height * fit).toInt())
         }
 
         override fun onDraw(canvas: Canvas) {
             val b = bmp ?: return
             canvas.save()
-            canvas.scale(scale, scale)
+            canvas.translate(-panX, -panY)
+            val t = total()
+            canvas.scale(t, t)
             canvas.drawBitmap(b, 0f, 0f, paint)
             val r = maxOf(6f, b.height * 0.012f)
             for (d in doors) {

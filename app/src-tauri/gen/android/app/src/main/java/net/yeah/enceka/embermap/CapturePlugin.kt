@@ -468,6 +468,9 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
     private var overlayView: OverlayView? = null
     private var controlView: ControlView? = null
     private var controlLp: WindowManager.LayoutParams? = null
+    /** 控制条收起态：贴边小柄。0=展开 1=贴左 2=贴右 */
+    private var controlCollapsed = false
+    private var controlDock = 0
 
     /**
      * 控制悬浮窗：手机上没有键盘，桌面端那套全局热键在这里等价于几个按钮。
@@ -485,60 +488,144 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
             try {
                 val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 if (!args.show) {
-                    controlView?.let { runCatching { wm.removeView(it) } }
-                    controlView = null
-                    controlLp = null
+                    removeControl(wm)
                     invoke.resolve(JSObject())
                     return@runOnUiThread
                 }
-                var view = controlView
-                if (view == null) {
-                    val lp = WindowManager.LayoutParams(
-                        WindowManager.LayoutParams.WRAP_CONTENT,
-                        WindowManager.LayoutParams.WRAP_CONTENT,
-                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                        // 只加 NOT_FOCUSABLE：这个窗口要收下自己范围内的触摸
-                        //（这正是它与叠加层必须分成两个窗口的原因），
-                        // 但不抢焦点，游戏的其余部分照常操作
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                        PixelFormat.TRANSLUCENT
-                    )
-                    lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        lp.layoutInDisplayCutoutMode =
-                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-                    }
-                    val (sw, sh) = screenSize()
-                    lp.x = sw / 20
-                    lp.y = sh / 12
-                    val v = ControlView(activity) { action, value ->
-                        pendingActions.add(action to value)
-                    }
-                    v.onDrag = { dx, dy ->
-                        controlLp?.let { p ->
-                            p.x += dx
-                            p.y += dy
-                            runCatching { wm.updateViewLayout(v, p) }
-                        }
-                    }
-                    wm.addView(v, lp)
-                    controlView = v
-                    controlLp = lp
-                    view = v
-                }
+                val view = ensureControlView(wm)
                 view.setStatus(args.status)
                 view.setFlags(args.overlayOn, args.mapOn, args.busy)
                 view.setFloor(args.floor)
                 val (sw, sh) = screenSize()
                 // 整层图等比缩放的上限：宽不超过屏幕的 2/3，高不超过一半，
-                // 免得把游戏画面整个盖住
+                // 免得把游戏画面整个盖住（用户可再捏合放大，见 FloorMapView）
                 view.setMap(args.mapPath, args.mapDoors, sw * 2 / 3, sh / 2)
+                if (!controlCollapsed) clampControl(wm, sw, sh)
                 invoke.resolve(JSObject())
-            } catch (e: Exception) {
-                Log.e("EmberMap", "控制悬浮窗失败", e)
-                invoke.reject(e.message ?: "控制悬浮窗失败")
+            } catch (t: Throwable) {
+                Log.e("EmberMap", "控制悬浮窗失败", t)
+                invoke.reject(t.message ?: "控制悬浮窗失败")
             }
+        }
+    }
+
+    /** 取现有控制条；不存在或已被系统摘除（窗口失效类异常路径）就重建。 */
+    private fun ensureControlView(wm: WindowManager): ControlView {
+        controlView?.let { v ->
+            if (v.isAttachedToWindow) return v
+            runCatching { wm.removeView(v) }
+            controlView = null
+            controlLp = null
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            // 只加 NOT_FOCUSABLE：这个窗口要收下自己范围内的触摸
+            //（这正是它与叠加层必须分成两个窗口的原因），
+            // 但不抢焦点，游戏的其余部分照常操作
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        }
+        val (sw, sh) = screenSize()
+        lp.x = sw / 20
+        lp.y = sh / 12
+        val v = ControlView(activity) { action, value ->
+            pendingActions.add(action to value)
+        }
+        // 拖动全程把窗口钳在屏内：此前可以整条拖出屏幕外找不回来
+        v.onDrag = { dx, dy ->
+            val p = controlLp
+            if (p != null) {
+                val (w, h) = screenSize()
+                p.x = (p.x + dx).coerceIn(0, (w - v.width).coerceAtLeast(0))
+                p.y = (p.y + dy).coerceIn(0, (h - v.height).coerceAtLeast(0))
+                runCatching { wm.updateViewLayout(v, p) }
+            }
+        }
+        // 松手：离边缘足够近（或收起态拖完了）就贴边收起
+        v.onDragEnd = {
+            val p = controlLp
+            if (p != null && v.isAttachedToWindow) {
+                if (controlCollapsed) {
+                    val (w, _) = screenSize()
+                    dockControl(if (p.x + v.width / 2 < w / 2) 1 else 2)
+                } else {
+                    val (w, _) = screenSize()
+                    val edge = (20 * v.resources.displayMetrics.density).toInt()
+                    when {
+                        p.x <= edge -> dockControl(1)
+                        p.x + v.width >= w - edge -> dockControl(2)
+                    }
+                }
+            }
+        }
+        v.onExpandRequest = { expandControl() }
+        wm.addView(v, lp)
+        controlView = v
+        controlLp = lp
+        controlCollapsed = false
+        controlDock = 0
+        return v
+    }
+
+    private fun removeControl(wm: WindowManager) {
+        controlView?.let { runCatching { wm.removeView(it) } }
+        controlView = null
+        controlLp = null
+        controlCollapsed = false
+        controlDock = 0
+    }
+
+    /** 旋转/改尺寸后把控制条钳回屏内（每次 showControl 顺手做） */
+    private fun clampControl(wm: WindowManager, sw: Int, sh: Int) {
+        val v = controlView ?: return
+        val p = controlLp ?: return
+        if (!v.isAttachedToWindow) return
+        val nx = p.x.coerceIn(0, (sw - v.width).coerceAtLeast(0))
+        val ny = p.y.coerceIn(0, (sh - v.height).coerceAtLeast(0))
+        if (nx != p.x || ny != p.y) {
+            p.x = nx
+            p.y = ny
+            runCatching { wm.updateViewLayout(v, p) }
+        }
+    }
+
+    /** 收起成贴边小柄：side 1=贴左 2=贴右。等待重新测量后再定位到边缘。 */
+    private fun dockControl(side: Int) {
+        val v = controlView ?: return
+        val p = controlLp ?: return
+        controlCollapsed = true
+        controlDock = side
+        v.setCollapsed(true)
+        v.post {
+            val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val (w, h) = screenSize()
+            p.x = if (side == 1) 0 else (w - v.width).coerceAtLeast(0)
+            p.y = p.y.coerceIn(0, (h - v.height).coerceAtLeast(0))
+            runCatching { wm.updateViewLayout(v, p) }
+        }
+    }
+
+    /** 点贴边小柄展开回完整控制条，并把窗口钳回屏内。 */
+    private fun expandControl() {
+        val v = controlView ?: return
+        val p = controlLp ?: return
+        controlCollapsed = false
+        controlDock = 0
+        v.setCollapsed(false)
+        v.post {
+            val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val (w, h) = screenSize()
+            p.x = p.x.coerceIn(0, (w - v.width).coerceAtLeast(0))
+            p.y = p.y.coerceIn(0, (h - v.height).coerceAtLeast(0))
+            runCatching { wm.updateViewLayout(v, p) }
         }
     }
 
@@ -610,6 +697,12 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
                 lp.y = args.y
 
                 var view = overlayView
+                if (view != null && !view.isAttachedToWindow) {
+                    // 窗口已被系统摘除（异常路径）；旧引用不能 updateViewLayout，重建
+                    runCatching { wm.removeView(view) }
+                    overlayView = null
+                    view = null
+                }
                 if (view == null) {
                     view = OverlayView(activity)
                     wm.addView(view, lp)
@@ -619,9 +712,9 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
                 }
                 view.update(args)
                 invoke.resolve(JSObject())
-            } catch (e: Exception) {
-                Log.e("EmberMap", "悬浮窗显示失败", e)
-                invoke.reject(e.message ?: "悬浮窗显示失败")
+            } catch (t: Throwable) {
+                Log.e("EmberMap", "悬浮窗显示失败", t)
+                invoke.reject(t.message ?: "悬浮窗显示失败")
             }
         }
     }
@@ -631,10 +724,8 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
         activity.runOnUiThread {
             val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             overlayView?.let { runCatching { wm.removeView(it) } }
-            controlView?.let { runCatching { wm.removeView(it) } }
+            removeControl(wm)
             overlayView = null
-            controlView = null
-            controlLp = null
         }
     }
 
@@ -646,7 +737,7 @@ class CapturePlugin(private val activity: Activity) : Plugin(activity) {
                     val wm = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                     wm.removeView(it)
                 }
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             } finally {
                 overlayView = null
             }
