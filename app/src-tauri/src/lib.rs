@@ -467,7 +467,11 @@ fn rgba_to_rgb(rgba: Vec<u8>, n: usize) -> Vec<u8> {
 /// 返回 (rgb, w, h, 该图左上角在屏幕上的物理坐标)。
 #[cfg(desktop)]
 fn capture_target() -> Result<(Vec<u8>, usize, usize, i32, i32), String> {
-    if let Ok(windows) = xcap::Window::all() {
+    // EM_FORCE_MONITOR=1：跳过找游戏窗口，直接抓主屏。
+    // 排障用——把一张游戏截图摆到屏幕上就能复现整条链路，不必真的开着游戏。
+    if std::env::var("EM_FORCE_MONITOR").is_ok() {
+        eprintln!("[em] EM_FORCE_MONITOR=1，直接抓主屏");
+    } else if let Ok(windows) = xcap::Window::all() {
         let game = windows.into_iter().find(|w| {
             let name = format!(
                 "{} {}",
@@ -808,6 +812,13 @@ fn capabilities(app: tauri::AppHandle) -> serde_json::Value {
     })
 }
 
+/// 前端把关键判断点打到 stderr，与后端日志汇到同一条时间线上。
+/// WebView 的 console 在发行版里看不见，排障时缺这一段就只能靠猜。
+#[tauri::command]
+fn log_line(msg: String) {
+    eprintln!("[em/ui] {msg}");
+}
+
 /// 清除锁定与投票，下一帧从零开始高质量识别（换局/怀疑锁错时用）
 #[tauri::command]
 fn reset_lock(state: State<AppState>) {
@@ -932,15 +943,24 @@ fn overlay_update(
                 .focused(false)
                 .visible(false)
                 .build()
-                .map_err(|e| e.to_string())?;
-            w.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
-            w.set_content_protected(true).map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    eprintln!("[em] 覆盖窗创建失败：{e}");
+                    e.to_string()
+                })?;
+            if let Err(e) = w.set_ignore_cursor_events(true) {
+                eprintln!("[em] 覆盖窗设置点击穿透失败（不影响显示）：{e}");
+            }
+            if let Err(e) = w.set_content_protected(true) {
+                eprintln!("[em] 覆盖窗设置防抓屏失败（不影响显示）：{e}");
+            }
+            eprintln!("[em] 覆盖窗已创建");
             w
         }
     };
     win.set_position(PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
     win.set_size(PhysicalSize::new(w, h)).map_err(|e| e.to_string())?;
     win.show().map_err(|e| e.to_string())?;
+    eprintln!("[em] 覆盖窗已摆放 {w}x{h}@{x},{y} 可见={:?}", win.is_visible());
     // show 之后再发数据，overlay.html 首次加载时监听器可能尚未就绪，
     // 前端带重试（首帧由 overlay-ready 事件拉取）
     win.emit("overlay-data", payload).map_err(|e| e.to_string())?;
@@ -1141,6 +1161,7 @@ pub fn run() {
         analyze_screen,
         analyze_file,
         reset_lock,
+        log_line,
         set_pin,
         get_pin,
         list_maps,
@@ -1177,6 +1198,7 @@ pub fn run() {
             analyze_screen,
             analyze_file,
             reset_lock,
+            log_line,
             set_pin,
             get_pin,
             list_maps,

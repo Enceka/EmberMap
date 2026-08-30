@@ -16,7 +16,8 @@
       <button id="btn-reset" title="清除已锁定的变体，下次全库重扫">重新识别</button>
       <button id="btn-grant" hidden>授权投屏</button>
       <label><input type="checkbox" id="chk-watch" checked /> 自动监测</label>
-      <label><input type="checkbox" id="chk-overlay" checked /> 叠加层</label>
+      <!-- 默认不勾：叠加层会盖在游戏画面上，该不该出现由用户决定 -->
+      <label><input type="checkbox" id="chk-overlay" /> 叠加层</label>
       <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
       <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
       <label>叠加层不透明度

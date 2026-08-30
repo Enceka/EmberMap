@@ -338,7 +338,11 @@ async function burstCapture() {
     }
   }
   if (ok && lastPayload) {
-    ctrl.status = `${lastPayload.name} · ${floorCn(lastPayload.floor)}　置信 ${lastPayload.score.toFixed(2)}`;
+    const who = `${lastPayload.name} · ${floorCn(lastPayload.floor)}`;
+    // 叠加层被关着时，只报「识别成功」会让人以为功能坏了——说清楚该点哪儿
+    ctrl.status = overlayMode
+      ? `${who}　置信 ${lastPayload.score.toFixed(2)}`
+      : `${who}　已识别，但叠加层是关的——点「叠加层 关」打开`;
     // 认出来了才知道是哪张图，整层视图这时才有内容可显示
     if (ctrl.mapOn && !ctrl.floor) ctrl.floor = lastPayload.floor;
     if (ctrl.mapOn) await ensureFloorCached(ctrl.floor);
@@ -558,8 +562,22 @@ function fingerprint(p) {
           t.tx.toFixed(0), t.ty.toFixed(0), $("rng-alpha").value].join("|");
 }
 
+/// 把前端的关键判断打到后端 stderr，与后端日志汇成一条时间线。
+/// 发行版里 WebView 的 console 看不见，缺这一段排障就只能靠猜——
+/// 「识别成功却没显示地图」当初就卡在分不清是没推、推了没画、还是画在别处。
+/// 同一句话只打一次，避免每帧刷屏。
+let lastUiLog = "";
+const uiLog = (m) => {
+  if (m === lastUiLog) return;
+  lastUiLog = m;
+  try { invoke("log_line", { msg: m }); } catch { /* 旧后端 */ }
+};
+
 async function pushOverlay(force) {
-  if (!overlayMode || !lastPayload) return;
+  if (!overlayMode || !lastPayload) {
+    uiLog(`叠加层未推送：开关=${overlayMode ? "开" : "关"} 有结果=${!!lastPayload}`);
+    return;
+  }
   const fp = fingerprint(lastPayload);
   // 走到这里就说明本轮拿到了可信结果，保活时限要续上——哪怕几何没变、
   // 下面因去重直接返回也一样，否则稳态叠加反倒会被兜底逻辑每 5 秒收一次
@@ -646,14 +664,17 @@ async function analyzeOnce(auto) {
     // 看整层时只推叠加层（悬浮窗照旧跟着游戏走），画布与状态栏归整层视图
     if (!viewFloor) {
       const tag = { tracking: "跟踪", pinned: "手动锁定" }[p.phase] || "已锁定";
+      // 叠加层默认是关的，只报「识别成功」会让人以为该出现的没出现
       setStatus(
         `${p.name} · ${floorCn(p.floor)}　置信 ${p.score.toFixed(2)}　` +
-        `领先次佳 ${p.advantage.toFixed(3)}　${tag}`,
+        `领先次佳 ${p.advantage.toFixed(3)}　${tag}` +
+        (overlayMode ? "" : "（叠加层未开，勾选「叠加层」贴到游戏上）"),
         "ok"
       );
       renderCandidates(p.candidates);
       await render(p);
     }
+    uiLog(`命中 ${p.name} ${p.floor}　叠加层开关=${overlayMode ? "开" : "关"}`);
     await pushOverlay(false);
     return "hit";
   } catch (e) {
@@ -720,7 +741,8 @@ $("chk-overlay").addEventListener("change", async (ev) => {
   } else {
     await hideOverlay();
   }
-  await syncControl(); // 控制条上的「叠加」按钮态跟着走
+  localStorage.setItem("em_overlay", overlayMode ? "1" : "0");
+  await syncControl(); // 控制条上的「叠加层」按钮态跟着走
 });
 $("chk-top").addEventListener("change", (ev) => appWindow.setAlwaysOnTop(ev.target.checked));
 $("rng-alpha").addEventListener("input", () => {
@@ -762,8 +784,8 @@ listen("hotkey", async (ev) => {
     // Android：悬浮窗由系统权限管控，勾选时按需申请
     $("chk-top").disabled = true;
     $("chk-top").closest("label")?.style.setProperty("opacity", "0.4");
-    $("chk-overlay").checked = false;
-    overlayMode = false;
+    overlayMode = localStorage.getItem("em_overlay") === "1";
+    $("chk-overlay").checked = overlayMode;
     $("chk-overlay").addEventListener("change", async (ev) => {
       if (!ev.target.checked) return;
       try {
@@ -846,7 +868,10 @@ listen("hotkey", async (ev) => {
     return;
   }
 
-  overlayMode = $("chk-overlay").checked;
+  // 叠加层默认关：它会盖在游戏画面上，开不开由用户定。
+  // 记住用户上次的选择，免得每次启动都要重勾。
+  overlayMode = localStorage.getItem("em_overlay") === "1";
+  $("chk-overlay").checked = overlayMode;
   if ($("chk-watch").checked) {
     watching = true;
     setStatus("自动监测中——打开游戏内地图即自动识别");
