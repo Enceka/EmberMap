@@ -68,33 +68,32 @@ async function render(p) {
   // 这也让预览成为排查叠加错位的可信参照。
   const k = shot.width > 0 ? p.view[2] / shot.width : 1;
   renderGeom(p, shot.width);
-  canvas.width = Math.max(1, Math.round(shot.width * k));
-  canvas.height = Math.max(1, Math.round(shot.height * k));
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(shot, 0, 0, canvas.width, canvas.height);
-  ctx.save();
-  ctx.setTransform(p.tf.scale, 0, 0, p.tf.scale, p.tf.tx, p.tf.ty);
-  ctx.globalCompositeOperation = "screen";
-  ctx.globalAlpha = alpha;
-  ctx.drawImage(draw, 0, 0);
-  ctx.restore();
-  drawDoors(p.doors);
+  const w = Math.max(1, Math.round(shot.width * k));
+  const h = Math.max(1, Math.round(shot.height * k));
+  // 连续预览时保留用户的缩放/平移（内容尺寸没变就不重置视图）
+  setScene(w, h, (g) => {
+    g.drawImage(shot, 0, 0, w, h);
+    g.save();
+    g.setTransform(p.tf.scale, 0, 0, p.tf.scale, p.tf.tx, p.tf.ty);
+    g.globalCompositeOperation = "screen";
+    g.globalAlpha = alpha;
+    g.drawImage(draw, 0, 0);
+    g.restore();
+    drawDoors(g, p.doors, h);
+  }, { keepView: true });
 }
 
-/// 排障用：把实际抓到的整帧画到 canvas 上，用户截图即可看出抓到的是什么
+/// 排障用：把实际抓到的整帧画进场景，用户截图即可看出抓到的是什么
 async function drawFrame(b64) {
   const im = await loadImg(b64);
-  canvas.width = im.width;
-  canvas.height = im.height;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(im, 0, 0);
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(0, 0, canvas.width, 26);
-  ctx.fillStyle = "#e3b341";
-  ctx.font = "16px sans-serif";
-  ctx.fillText("这是识别器实际抓到的画面", 8, 19);
+  setScene(im.width, im.height, (g) => {
+    g.drawImage(im, 0, 0);
+    g.fillStyle = "rgba(0,0,0,0.55)";
+    g.fillRect(0, 0, im.width, 26);
+    g.fillStyle = "#e3b341";
+    g.font = "16px sans-serif";
+    g.fillText("这是识别器实际抓到的画面", 8, 19);
+  }, { keepView: true });
 }
 
 /// 叠加层几何对账行：view 是悬浮窗矩形（屏幕物理 px），tf 是手绘图→窗口局部的相似变换，
@@ -108,97 +107,159 @@ function renderGeom(p, shotW) {
 }
 
 // ---------------------------------------------------------------------------
-// 画布缩放：识别预览与「看整层」共用这块画布。
+// 固定视口 + 内部缩放平移。
 //
-// 有的地图窄长、有的几乎正方形，宽度铺满时小地图看不清门位标注，
-// 长图又要来回滚——缩放交给用户自己调：Ctrl/⌘+滚轮（触控板捏合同此）、
-// 双指捏合、按钮皆可，双击画布在「适应宽度」与上次放大倍率之间切换。
-// 倍率记到 localStorage，识别预览与整层视图共用同一档。
+// #view 是一块固定大小的画框（不随内容变尺寸、不带动页面滚动）；
+// 内容先画进离屏 scene（原生分辨率），再按 fit×zoom + 平移量投影进画框。
+// 缩放：滚轮 / 双指捏合 / 按钮 / 双击，均以指针为锚；平移：框内拖动。
+// 这样长图不再撑长页面，缩放也不再和页面滚动纠缠。
 // ---------------------------------------------------------------------------
-const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 6;
-let viewZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(localStorage.getItem("em_viewzoom")) || 1));
-let zoomLast = 2.5;   // 双击切换用的「放大档」，跟随用户最近一次放大到的倍率
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 8;
+const scene = document.createElement("canvas");  // 离屏：合成后的内容，原生分辨率
+const sctx = scene.getContext("2d");
+let sceneReady = false;
+let fitScale = 1;     // 让 scene 宽铺满画框的系数（zoom=1 时）
+let zoom = 1;         // 用户在 fit 之上的缩放倍率
+let panX = 0, panY = 0;  // scene 左上角在画框内的位置（CSS px）
 
-function applyZoom() {
-  canvas.style.width = viewZoom === 1 ? "" : `${viewZoom * 100}%`;
-  $("zoom-val").textContent = `${Math.round(viewZoom * 100)}%`;
-  localStorage.setItem("em_viewzoom", String(viewZoom));
+/// 画框的 CSS 尺寸；顺便把 backing store 调到 CSS×dpr，高分屏不糊
+function viewportSize() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 1;
+  const cssH = canvas.clientHeight || 1;
+  if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+  return { cssW, cssH, dpr };
 }
 
-/// 以屏幕点 (cx, cy) 为锚缩放：缩放前后这个点压住的内容不变
+/// 把 scene 投影进画框
+function blit() {
+  const { cssW, cssH, dpr } = viewportSize();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  if (!sceneReady) return;
+  const s = fitScale * zoom;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(scene, panX, panY, scene.width * s, scene.height * s);
+  $("zoom-val").textContent = `${Math.round(zoom * 100)}%`;
+}
+
+/// 至少留一部分内容在框内，拖不飞
+function clampPan() {
+  const { cssW, cssH } = viewportSize();
+  const s = fitScale * zoom;
+  const dw = scene.width * s, dh = scene.height * s;
+  const margin = 40;
+  panX = Math.min(cssW - margin, Math.max(margin - dw, panX));
+  panY = Math.min(cssH - margin, Math.max(margin - dh, panY));
+}
+
+/// 回到「适应宽度、顶端对齐」的初始视图
+function resetView() {
+  const { cssW, cssH } = viewportSize();
+  if (!sceneReady) { blit(); return; }
+  fitScale = cssW / scene.width;
+  zoom = 1;
+  const dh = scene.height * fitScale;
+  panX = 0;
+  panY = dh < cssH ? (cssH - dh) / 2 : 0;  // 矮图居中，高图顶端对齐后可下拉
+  blit();
+}
+
+/// 用离屏 scene 承接一帧内容。keepView：内容尺寸没变就保留当前缩放/平移
+/// （连续识别预览用），否则回到适应视图（切楼层、切到排障帧用）。
+function setScene(w, h, paint, opts = {}) {
+  const sameSize = scene.width === w && scene.height === h;
+  if (!sameSize) { scene.width = w; scene.height = h; }
+  sctx.setTransform(1, 0, 0, 1, 0, 0);
+  sctx.clearRect(0, 0, w, h);
+  paint(sctx);
+  sceneReady = true;
+  if (opts.keepView && sameSize) blit();
+  else resetView();
+}
+
 function zoomAt(cx, cy, factor) {
-  const scroller = canvas.closest("main");
-  const rect = canvas.getBoundingClientRect();
-  const fx = (cx - rect.left) / rect.width;
-  const fy = (cy - rect.top) / rect.height;
-  const prev = viewZoom;
-  viewZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, viewZoom * factor));
-  if (viewZoom === prev) return;
-  if (viewZoom > 1.01) zoomLast = viewZoom;
-  applyZoom();
-  // 按新旧矩形之差补正滚动，锚点下的内容保持在指针处
-  const r2 = canvas.getBoundingClientRect();
-  scroller.scrollLeft += fx * r2.width - (cx - r2.left);
-  scroller.scrollTop += fy * r2.height - (cy - r2.top);
-}
-
-function zoomCenter(factor) {
-  const sc = canvas.closest("main");
-  const r = sc.getBoundingClientRect();
-  zoomAt(r.left + r.width / 2, r.top + Math.min(r.height, window.innerHeight) / 2, factor);
+  const ns = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor));
+  if (ns === zoom) return;
+  const k = ns / zoom;
+  // 锚点下的内容保持在指针处：panX' = cx − (cx − panX)·k
+  panX = cx - (cx - panX) * k;
+  panY = cy - (cy - panY) * k;
+  zoom = ns;
+  clampPan();
+  blit();
 }
 
 function initZoomUi() {
-  applyZoom();
-  $("zoom-in").addEventListener("click", () => zoomCenter(1.25));
-  $("zoom-out").addEventListener("click", () => zoomCenter(0.8));
-  $("zoom-fit").addEventListener("click", () => { viewZoom = 1; applyZoom(); });
-  // 触控板捏合以 Ctrl+滚轮的形式上报；普通滚轮仍留给页面滚动
+  const rectXY = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  };
+  const centerZoom = (f) => zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, f);
+  $("zoom-in").addEventListener("click", () => centerZoom(1.25));
+  $("zoom-out").addEventListener("click", () => centerZoom(0.8));
+  $("zoom-fit").addEventListener("click", resetView);
+
+  // 画框自己拥有全部手势（touch-action: none），不再和页面滚动抢
   canvas.addEventListener("wheel", (ev) => {
-    if (!ev.ctrlKey && !ev.metaKey) return;
     ev.preventDefault();
-    zoomAt(ev.clientX, ev.clientY, Math.exp(-ev.deltaY * 0.0025));
+    const [cx, cy] = rectXY(ev);
+    zoomAt(cx, cy, Math.exp(-ev.deltaY * 0.0025));
   }, { passive: false });
-  // 触屏：双指捏合缩放（#view 的 touch-action: pan-y 保证手势事件到 JS）；
-  // 放大后单指横向拖动，纵向仍走原生滚动
-  let pinch = null;
-  let pan = null;
-  const touchDist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
+  // 鼠标拖动平移
+  let drag = null;
+  canvas.addEventListener("mousedown", (ev) => { drag = { x: ev.clientX, y: ev.clientY }; });
+  window.addEventListener("mousemove", (ev) => {
+    if (!drag) return;
+    panX += ev.clientX - drag.x; panY += ev.clientY - drag.y;
+    drag = { x: ev.clientX, y: ev.clientY };
+    clampPan(); blit();
+  });
+  window.addEventListener("mouseup", () => { drag = null; });
+
+  // 触屏：单指平移，双指捏合缩放
+  let pinch = null, ptouch = null;
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t) => {
+    const r = canvas.getBoundingClientRect();
+    return [(t[0].clientX + t[1].clientX) / 2 - r.left, (t[0].clientY + t[1].clientY) / 2 - r.top];
+  };
   canvas.addEventListener("touchstart", (ev) => {
-    if (ev.touches.length === 2) {
-      pinch = { d: touchDist(ev.touches),
-                cx: (ev.touches[0].clientX + ev.touches[1].clientX) / 2,
-                cy: (ev.touches[0].clientY + ev.touches[1].clientY) / 2 };
-      pan = null;
-    } else if (ev.touches.length === 1 && viewZoom > 1) {
-      pan = { x: ev.touches[0].clientX, sl: canvas.closest("main").scrollLeft };
-    }
+    if (ev.touches.length === 2) { pinch = { d: dist(ev.touches), m: mid(ev.touches) }; ptouch = null; }
+    else if (ev.touches.length === 1) { ptouch = { x: ev.touches[0].clientX, y: ev.touches[0].clientY }; }
   }, { passive: false });
   canvas.addEventListener("touchmove", (ev) => {
+    ev.preventDefault();
     if (pinch && ev.touches.length === 2) {
-      ev.preventDefault();
-      const d = touchDist(ev.touches);
-      zoomAt(pinch.cx, pinch.cy, d / pinch.d);
-      pinch.d = d;
-      pinch.cx = (ev.touches[0].clientX + ev.touches[1].clientX) / 2;
-      pinch.cy = (ev.touches[0].clientY + ev.touches[1].clientY) / 2;
-    } else if (pan && ev.touches.length === 1 && viewZoom > 1) {
-      canvas.closest("main").scrollLeft = pan.sl - (ev.touches[0].clientX - pan.x);
+      const d = dist(ev.touches), m = mid(ev.touches);
+      zoomAt(m[0], m[1], d / pinch.d);
+      pinch = { d, m };
+    } else if (ptouch && ev.touches.length === 1) {
+      panX += ev.touches[0].clientX - ptouch.x;
+      panY += ev.touches[0].clientY - ptouch.y;
+      ptouch = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+      clampPan(); blit();
     }
   }, { passive: false });
-  const endTouch = (ev) => {
-    if (ev.touches.length < 2) pinch = null;
-    if (ev.touches.length === 0) pan = null;
-  };
+  const endTouch = (ev) => { if (ev.touches.length < 2) pinch = null; if (ev.touches.length === 0) ptouch = null; };
   canvas.addEventListener("touchend", endTouch);
   canvas.addEventListener("touchcancel", endTouch);
-  canvas.addEventListener("dblclick", () => {
-    const sc = canvas.closest("main");
-    const r = sc.getBoundingClientRect();
-    if (viewZoom > 1.01) zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / viewZoom);
-    else zoomAt(r.left + r.width / 2, r.top + r.height / 2, zoomLast);
+
+  // 双击：适应 ⇄ 放大到 250%，以双击点为锚
+  canvas.addEventListener("dblclick", (ev) => {
+    const [cx, cy] = rectXY(ev);
+    if (zoom > 1.05) resetView();
+    else zoomAt(cx, cy, 2.5 / zoom);
   });
+
+  // 画框尺寸随窗口变（旋转/改窗口），重新适应
+  window.addEventListener("resize", () => { if (zoom <= 1.01) resetView(); else { clampPan(); blit(); } });
 }
 
 // ---------------------------------------------------------------------------
@@ -266,14 +327,13 @@ async function showFloor(floor) {
   }
   const m = viewCache[key];
   const im = await loadImg(m.draw_png);
-  canvas.width = m.w;
-  canvas.height = m.h;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(im, 0, 0);
-  drawDoors(m.doors);
+  // 切了楼层是新内容，回到适应视图（不置 keepView）
+  setScene(m.w, m.h, (g) => {
+    g.drawImage(im, 0, 0);
+    drawDoors(g, m.doors, m.h);
+  });
   $("geom").textContent = `整层 ${m.name} · ${floorCn(m.floor)}　${m.w}×${m.h}`;
-  setStatus(`看整层：${m.name} · ${floorCn(m.floor)}（不随游戏画面变化）`);
+  setStatus(`看整层：${m.name} · ${floorCn(m.floor)}（可缩放拖动；不随游戏画面变化）`);
   renderCandidates([]);
 }
 
@@ -621,20 +681,21 @@ async function initHotkeyUi() {
   });
 }
 
-function drawDoors(doors) {
-  const r = Math.max(8, canvas.height * 0.014);
-  ctx.font = `bold ${Math.max(15, canvas.height * 0.026)}px "PingFang SC", sans-serif`;
+/// 门位画进 scene（h = 场景高，用来定圆圈/字号）
+function drawDoors(g, doors, h) {
+  const r = Math.max(8, h * 0.014);
+  g.font = `bold ${Math.max(15, h * 0.026)}px "PingFang SC", sans-serif`;
   for (const d of doors) {
-    ctx.strokeStyle = "#ff5050";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = "#ff7878";
-    ctx.strokeStyle = "#000";
-    ctx.lineWidth = 3;
-    ctx.strokeText(d.label, d.x + r + 4, d.y + 5);
-    ctx.fillText(d.label, d.x + r + 4, d.y + 5);
+    g.strokeStyle = "#ff5050";
+    g.lineWidth = 4;
+    g.beginPath();
+    g.arc(d.x, d.y, r, 0, Math.PI * 2);
+    g.stroke();
+    g.fillStyle = "#ff7878";
+    g.strokeStyle = "#000";
+    g.lineWidth = 3;
+    g.strokeText(d.label, d.x + r + 4, d.y + 5);
+    g.fillText(d.label, d.x + r + 4, d.y + 5);
   }
 }
 

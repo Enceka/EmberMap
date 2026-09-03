@@ -369,7 +369,7 @@
      "tf_draw_to_game": {
       "scale": 0.9804,
       "tx": 0.0,
-      "ty": -448.63125
+      "ty": 0.0
      },
      "doors": [
       {
@@ -402,8 +402,8 @@
      "draw": "draw/gm-9b1c9548_b1.png",
      "tf_draw_to_game": {
       "scale": 0.79633,
-      "tx": 40.6875,
-      "ty": 0.0
+      "tx": 42.14062,
+      "ty": 1.45312
      },
      "doors": []
     }

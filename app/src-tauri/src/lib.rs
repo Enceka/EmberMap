@@ -369,7 +369,12 @@ fn run_analysis(rgb: Vec<u8>, w: usize, h: usize, state: &AppState) -> Result<Pa
                 eprintln!("[em] {dt:?} 本帧无判别力（分差 {advantage:.3}），按无地图处理");
                 state.tracker.lock().unwrap().on_no_panel();
                 return Ok(Payload::NoPanel {
-                    reason: format!("画面里没有能分辨出来的地图（各变体分差仅 {advantage:.3}）"),
+                    // 探索得太少时，Y 形路口一段走廊哪张图都对得上，自动识别无从下手。
+                    // 与其反复「识别中」，不如指条明路：多探索些，或直接手动选地图。
+                    reason: format!(
+                        "探索出来的部分太少，还认不出是哪张（各变体只差 {advantage:.3}）；\
+                         多探索一点，或用上方「锁定地图」手动选"
+                    ),
                     frame_w: w,
                     frame_h: h,
                     frame_png: thumbnail(&rgb, w, h, 720)?,

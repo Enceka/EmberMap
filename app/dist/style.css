@@ -66,7 +66,14 @@ main {
 #viewbar button:active { border-color: #2d7ff9; color: #2d7ff9; }
 #zoom-val { min-width: 44px; text-align: center; color: #9aa6b2; font-variant-numeric: tabular-nums; }
 /* pan-y：纵向滚动交给系统；横向拖动与双指捏合由 JS 处理（见 main.js 画布缩放） */
-#view { width: 100%; background: #0c0f14; border-radius: 8px; display: block; touch-action: pan-y; }
+/* 固定画框：不随内容变高、不带动页面滚动；缩放平移都在框内完成。
+   touch-action: none —— 框内的手势全部交给 JS（捏合缩放 + 单指平移），
+   不让浏览器把它当成页面滚动。 */
+#view {
+  width: 100%; height: 52vh; background: #0c0f14; border-radius: 8px;
+  display: block; touch-action: none; cursor: grab;
+}
+#view:active { cursor: grabbing; }
 #candidates { list-style: none; padding: 8px 4px; font-size: 13px; color: #9aa6b2; }
 #candidates li.best { color: #7ee787; }
 #geom { padding: 0 4px 10px; font: 11px ui-monospace, Menlo, monospace; color: #6e7681; word-break: break-all; }
