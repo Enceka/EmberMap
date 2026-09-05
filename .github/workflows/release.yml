@@ -38,8 +38,12 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       # 产物文件名里用的版本标签（打 tag 时即 conf 里原本的版本号）
       label: ${{ steps.plan.outputs.label }}
+      # Release 说明里的「本次更改」小节（多行）
+      changelog: ${{ steps.log.outputs.changelog }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 变更日志要翻历史与 tag，浅克隆取不到
 
       - name: 按触发方式决定 tag / 名称 / 是否预发布
         id: plan
@@ -84,6 +88,54 @@ jobs:
             echo "label=${version:-$base}"
           } >> "$GITHUB_OUTPUT"
           echo "本次发布：$tag（版本 ${version:-$base}，prerelease=$pre）"
+
+      # 每份 Release 都要能回答「这一版比上一版改了什么」。
+      # 正式版比到上一个正式版 tag；测试版没有自己的 tag（nightly 每次删重建），
+      # 也比到上一个正式版——那正是「相对稳定版多了什么」。
+      # 仓库还没打过 tag 时退化成最近 20 条提交。
+      - name: 生成变更日志
+        id: log
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 只认正式版 tag：nightly / -test / -rc 之类不作为比较基准
+          stable() { git tag -l 'v*' --sort=-v:refname | grep -viE -- '-(test|nightly|rc|beta|alpha)' || true; }
+          if [ "$REF_TYPE" = tag ]; then
+            head_ref="$REF_NAME"
+            prev=$(stable | grep -vFx "$REF_NAME" | head -1)
+          else
+            head_ref="$SHA"
+            prev=$(stable | head -1)
+          fi
+          if [ -n "$prev" ]; then
+            body=$(git log --no-merges --format='- %s' "$prev..$head_ref")
+            head_line="自 **$prev** 以来："
+            compare="[完整差异](https://github.com/$GITHUB_REPOSITORY/compare/$prev...$head_ref)"
+          else
+            body=$(git log --no-merges --format='- %s' -n 20 "$head_ref")
+            head_line="最近 20 条提交（仓库还没有正式版 tag 可比）："
+            compare="[提交历史](https://github.com/$GITHUB_REPOSITORY/commits/$head_ref)"
+          fi
+          # 条数封顶，免得一份 Release 说明拉出几百行
+          total=$(printf '%s\n' "$body" | grep -c '^- ' || true)
+          if [ "$total" -gt 30 ]; then
+            body=$(printf '%s\n' "$body" | head -30)
+            body=$(printf '%s\n- …另有 %d 条，见下方完整差异' "$body" "$((total - 30))")
+          fi
+          [ -n "$body" ] || body="- （与上一版相比没有代码提交）"
+          {
+            echo "changelog<<__EM_CHANGELOG__"
+            echo "$head_line"
+            echo
+            echo "$body"
+            echo
+            echo "$compare"
+            echo "__EM_CHANGELOG__"
+          } >> "$GITHUB_OUTPUT"
+          echo "变更日志 $total 条（基准 ${prev:-无}）"
 
       # nightly 是滚动的：不先删，上一轮的产物会和这一轮混在同一个 Release 里
       - name: 清掉上一份 nightly
@@ -176,6 +228,12 @@ jobs:
             ${{ needs.meta.outputs.banner }}
 
             第五人格加页手记地图识别辅助（噩梦难度）。
+
+            ## 本次更改
+
+            ${{ needs.meta.outputs.changelog }}
+
+            ## 安装
 
             **平台包**：macOS 用 `.dmg`（仅 Apple Silicon），Windows 用 `-setup.exe`，
             Linux 用 `.AppImage` 或 `.deb`，Android 用 `.apk`（7.0+，arm64 与 x86_64 通用包）。
