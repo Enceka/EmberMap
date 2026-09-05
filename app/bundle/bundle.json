@@ -11,8 +11,8 @@
      "draw": "draw/gm-2dfb1dac_1f.png",
      "tf_draw_to_game": {
       "scale": 0.91474,
-      "tx": 0.0,
-      "ty": -8.725
+      "tx": -6.4032,
+      "ty": -17.87243
      },
      "doors": [
       {
@@ -28,8 +28,8 @@
      "draw": "draw/gm-2dfb1dac_2f.png",
      "tf_draw_to_game": {
       "scale": 0.87177,
-      "tx": 2.0125,
-      "ty": 0.0
+      "tx": -4.08988,
+      "ty": -6.10238
      },
      "doors": [
       {
@@ -45,8 +45,8 @@
      "draw": "draw/gm-2dfb1dac_b1.png",
      "tf_draw_to_game": {
       "scale": 1.07327,
-      "tx": 0.0,
-      "ty": -6.375
+      "tx": -216.80113,
+      "ty": -61.11192
      },
      "doors": []
     }
@@ -62,8 +62,8 @@
      "draw": "draw/gm-4e7df9bd_1f.png",
      "tf_draw_to_game": {
       "scale": 0.72326,
-      "tx": 0.0,
-      "ty": 0.0
+      "tx": -4.33959,
+      "ty": -4.33959
      },
      "doors": [
       {
@@ -79,8 +79,8 @@
      "draw": "draw/gm-4e7df9bd_2f.png",
      "tf_draw_to_game": {
       "scale": 0.743,
-      "tx": -1.88125,
-      "ty": -1.88125
+      "tx": -6.33927,
+      "ty": -6.33927
      },
      "doors": [
       {
@@ -96,8 +96,8 @@
      "draw": "draw/gm-4e7df9bd_b1.png",
      "tf_draw_to_game": {
       "scale": 0.79633,
-      "tx": 1.24062,
-      "ty": -2.48125
+      "tx": -173.15575,
+      "ty": -57.42805
      },
      "doors": []
     }
@@ -113,8 +113,8 @@
      "draw": "draw/gm-DA949283_1f.png",
      "tf_draw_to_game": {
       "scale": 1.07327,
-      "tx": 0.0,
-      "ty": -15.15
+      "tx": -7.51291,
+      "ty": -25.88273
      },
      "doors": [
       {
@@ -130,8 +130,8 @@
      "draw": "draw/gm-DA949283_2f.png",
      "tf_draw_to_game": {
       "scale": 1.05076,
-      "tx": 2.41875,
-      "ty": 0.0
+      "tx": -5.98736,
+      "ty": -7.35535
      },
      "doors": [
       {
@@ -147,8 +147,8 @@
      "draw": "draw/gm-DA949283_b1.png",
      "tf_draw_to_game": {
       "scale": 1.15031,
-      "tx": -3.38125,
-      "ty": 0.0
+      "tx": -252.99752,
+      "ty": -94.32504
      },
      "doors": []
     }
@@ -164,8 +164,8 @@
      "draw": "draw/gm-5e82da05_1f.png",
      "tf_draw_to_game": {
       "scale": 0.87177,
-      "tx": -1.9875,
-      "ty": -5.9625
+      "tx": -88.29258,
+      "ty": -11.19311
      },
      "doors": [
       {
@@ -181,8 +181,8 @@
      "draw": "draw/gm-5e82da05_2f.png",
      "tf_draw_to_game": {
       "scale": 0.93434,
-      "tx": -1.90312,
-      "ty": -3.80625
+      "tx": -8.44349,
+      "ty": -9.41228
      },
      "doors": [
       {
@@ -198,8 +198,8 @@
      "draw": "draw/gm-5e82da05_b1.png",
      "tf_draw_to_game": {
       "scale": 0.9804,
-      "tx": 4.26562,
-      "ty": -21.32812
+      "tx": -173.18638,
+      "ty": -133.09347
      },
      "doors": []
     }
@@ -215,8 +215,8 @@
      "draw": "draw/gm-259d066c_1f.png",
      "tf_draw_to_game": {
       "scale": 0.83081,
-      "tx": 1.85313,
-      "ty": 1.85313
+      "tx": -3.13175,
+      "ty": -3.13175
      },
      "doors": [
       {
@@ -232,8 +232,8 @@
      "draw": "draw/gm-259d066c_2f.png",
      "tf_draw_to_game": {
       "scale": 0.79633,
-      "tx": 0.0,
-      "ty": -10.05
+      "tx": -4.77798,
+      "ty": -14.82798
      },
      "doors": [
       {
@@ -249,8 +249,8 @@
      "draw": "draw/gm-259d066c_b1.png",
      "tf_draw_to_game": {
       "scale": 0.81339,
-      "tx": 52.9125,
-      "ty": 0.0
+      "tx": -130.91336,
+      "ty": -35.78911
      },
      "doors": []
     }
@@ -266,8 +266,8 @@
      "draw": "draw/gm-f0b73c1c_1f.png",
      "tf_draw_to_game": {
       "scale": 0.83081,
-      "tx": -2.16562,
-      "ty": -2.16562
+      "tx": -72.78468,
+      "ty": 41.03662
      },
      "doors": [
       {
@@ -283,8 +283,8 @@
      "draw": "draw/gm-f0b73c1c_2f.png",
      "tf_draw_to_game": {
       "scale": 0.84861,
-      "tx": -4.1375,
-      "ty": -2.06875
+      "tx": -9.22916,
+      "ty": 1.32569
      },
      "doors": [
       {
@@ -300,8 +300,8 @@
      "draw": "draw/gm-f0b73c1c_b1.png",
      "tf_draw_to_game": {
       "scale": 1.0014,
-      "tx": 0.0,
-      "ty": -7.09375
+      "tx": -131.18327,
+      "ty": -19.11054
      },
      "doors": []
     }
@@ -317,8 +317,8 @@
      "draw": "draw/gm-0c96f737_1f.png",
      "tf_draw_to_game": {
       "scale": 0.95435,
-      "tx": 2.55625,
-      "ty": 15.3375
+      "tx": -4.12422,
+      "ty": 51.60291
      },
      "doors": [
       {
@@ -334,8 +334,8 @@
      "draw": "draw/gm-0c96f737_2f.png",
      "tf_draw_to_game": {
       "scale": 0.95435,
-      "tx": 4.20625,
-      "ty": 2.10312
+      "tx": -29.1961,
+      "ty": -3.62299
      },
      "doors": [
       {
@@ -351,8 +351,8 @@
      "draw": "draw/gm-0c96f737_b1.png",
      "tf_draw_to_game": {
       "scale": 0.87177,
-      "tx": 120.75,
-      "ty": -2.625
+      "tx": -249.7516,
+      "ty": -19.1886
      },
      "doors": []
     }
@@ -368,8 +368,8 @@
      "draw": "draw/gm-9b1c9548_1f.png",
      "tf_draw_to_game": {
       "scale": 0.9804,
-      "tx": 0.0,
-      "ty": 0.0
+      "tx": -6.86278,
+      "ty": -5.88239
      },
      "doors": [
       {
@@ -385,8 +385,8 @@
      "draw": "draw/gm-9b1c9548_2f.png",
      "tf_draw_to_game": {
       "scale": 0.93434,
-      "tx": -1.74688,
-      "ty": -29.69688
+      "tx": -7.3529,
+      "ty": -39.04026
      },
      "doors": [
       {
@@ -402,8 +402,8 @@
      "draw": "draw/gm-9b1c9548_b1.png",
      "tf_draw_to_game": {
       "scale": 0.79633,
-      "tx": 42.14062,
-      "ty": 1.45312
+      "tx": -118.71813,
+      "ty": -13.67715
      },
      "doors": []
     }
@@ -419,8 +419,8 @@
      "draw": "draw/gm-9a7ac078_1f.png",
      "tf_draw_to_game": {
       "scale": 1.09626,
-      "tx": 9.1625,
-      "ty": -4.58125
+      "tx": 1.48865,
+      "ty": -11.15883
      },
      "doors": [
       {
@@ -436,8 +436,8 @@
      "draw": "draw/gm-9a7ac078_2f.png",
      "tf_draw_to_game": {
       "scale": 1.12618,
-      "tx": 10.725,
-      "ty": 2.68125
+      "tx": 3.96791,
+      "ty": -8.58056
      },
      "doors": [
       {
@@ -453,8 +453,8 @@
      "draw": "draw/gm-9a7ac078_b1.png",
      "tf_draw_to_game": {
       "scale": 0.83081,
-      "tx": -5.975,
-      "ty": 89.625
+      "tx": -160.50612,
+      "ty": -28.35037
      },
      "doors": []
     }
@@ -470,8 +470,8 @@
      "draw": "draw/gm-77602984_1f.png",
      "tf_draw_to_game": {
       "scale": 0.91474,
-      "tx": 0.0,
-      "ty": 4.075
+      "tx": -48.48141,
+      "ty": -4.15769
      },
      "doors": [
       {
@@ -487,8 +487,8 @@
      "draw": "draw/gm-77602984_2f.png",
      "tf_draw_to_game": {
       "scale": 0.91474,
-      "tx": 2.04688,
-      "ty": 4.09375
+      "tx": -4.35633,
+      "ty": -2.30945
      },
      "doors": [
       {
@@ -504,8 +504,8 @@
      "draw": "draw/gm-77602984_b1.png",
      "tf_draw_to_game": {
       "scale": 1.05076,
-      "tx": -1.32812,
-      "ty": 0.0
+      "tx": -280.83144,
+      "ty": -19.96452
      },
      "doors": []
     }
@@ -521,8 +521,8 @@
      "draw": "draw/gm-a9ce250e_1f.png",
      "tf_draw_to_game": {
       "scale": 0.93434,
-      "tx": 0.0,
-      "ty": -4.325
+      "tx": -55.12596,
+      "ty": -9.93103
      },
      "doors": [
       {
@@ -538,8 +538,8 @@
      "draw": "draw/gm-a9ce250e_2f.png",
      "tf_draw_to_game": {
       "scale": 0.93434,
-      "tx": -2.10312,
-      "ty": -10.51562
+      "tx": -7.70915,
+      "ty": -16.12165
      },
      "doors": [
       {
@@ -555,8 +555,8 @@
      "draw": "draw/gm-a9ce250e_b1.png",
      "tf_draw_to_game": {
       "scale": 0.87177,
-      "tx": -1.30937,
-      "ty": -3.92813
+      "tx": -162.58654,
+      "ty": -37.05533
      },
      "doors": []
     }
@@ -572,8 +572,8 @@
      "draw": "draw/gm-2404f84c_1f.png",
      "tf_draw_to_game": {
       "scale": 1.07327,
-      "tx": 12.0,
-      "ty": 2.4
+      "tx": 5.56036,
+      "ty": -7.25946
      },
      "doors": [
       {
@@ -589,8 +589,8 @@
      "draw": "draw/gm-2404f84c_2f.png",
      "tf_draw_to_game": {
       "scale": 0.9804,
-      "tx": 2.94062,
-      "ty": 2.94062
+      "tx": -2.94176,
+      "ty": -2.94176
      },
      "doors": [
       {
@@ -606,8 +606,8 @@
      "draw": "draw/gm-2404f84c_b1.png",
      "tf_draw_to_game": {
       "scale": 0.9804,
-      "tx": 16.05937,
-      "ty": 76.72813
+      "tx": -151.58865,
+      "ty": 26.72784
      },
      "doors": []
     }
@@ -623,8 +623,8 @@
      "draw": "draw/gm-15782d00_1f.png",
      "tf_draw_to_game": {
       "scale": 0.89556,
-      "tx": 0.0,
-      "ty": 1.93437
+      "tx": -6.26892,
+      "ty": -3.43898
      },
      "doors": [
       {
@@ -640,8 +640,8 @@
      "draw": "draw/gm-15782d00_2f.png",
      "tf_draw_to_game": {
       "scale": 0.81339,
-      "tx": 3.14375,
-      "ty": -12.575
+      "tx": -2.54997,
+      "ty": -20.70889
      },
      "doors": [
       {
@@ -657,8 +657,8 @@
      "draw": "draw/gm-15782d00_b1.png",
      "tf_draw_to_game": {
       "scale": 0.89044,
-      "tx": -1.4,
-      "ty": 0.0
+      "tx": -197.2974,
+      "ty": -20.48018
      },
      "doors": []
     }
