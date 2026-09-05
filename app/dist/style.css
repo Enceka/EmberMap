@@ -1,90 +1,178 @@
+/* 配色与尺寸集中在这里，别再一处处硬写十六进制 */
+:root {
+  --bg: #14181f;
+  --panel: #1b212b;
+  --sunk: #0c0f14;
+  --line: #2b3542;
+  --edge: #3a4553;
+  --text: #dde3ea;
+  --muted: #9aa6b2;
+  --dim: #6f7b88;
+  --accent: #2d7ff9;
+  --ok: #7ee787;
+  --warn: #e3b341;
+  --r: 7px;
+}
 * { box-sizing: border-box; margin: 0; }
+/* display:flex/grid 会盖掉 hidden 属性自带的 display:none（UA 样式优先级更低），
+   补这条统一兜住：热键栏、控制悬浮窗开关、设置抽屉都靠 hidden 控制显隐 */
+[hidden] { display: none !important; }
 body {
   font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #14181f;
-  color: #dde3ea;
+  background: var(--bg);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  font-size: 13px;
   /* 禁掉双击页面缩放，双击留给画布的「适应 ↔ 放大」切换 */
   touch-action: manipulation;
 }
+
+/* ---- 通用控件 ------------------------------------------------------------ */
+button {
+  font: inherit; cursor: pointer; border-radius: var(--r);
+  border: 1px solid transparent; padding: 6px 12px;
+  background: var(--panel); color: var(--muted);
+}
+button.primary { background: var(--accent); color: #fff; font-weight: 600; padding: 7px 18px; }
+button.primary:hover:not(:disabled) { background: #3d8bff; }
+button.ghost { background: transparent; border-color: var(--edge); }
+button.ghost:hover:not(:disabled) { border-color: var(--muted); color: var(--text); }
+button:disabled { opacity: 0.45; cursor: default; }
+/* 开关做成药丸：勾选框仍是原生 input，JS 的 .checked / dispatchEvent 全都照旧 */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--edge); border-radius: 999px;
+  padding: 5px 12px 5px 9px; color: var(--muted); cursor: pointer;
+  user-select: none; white-space: nowrap;
+}
+.chip:hover { border-color: var(--muted); }
+.chip input { accent-color: var(--accent); margin: 0; cursor: pointer; }
+/* :has 不支持时只是不高亮，勾选框本身照样显示状态，不影响可用 */
+.chip:has(input:checked) { border-color: var(--accent); color: var(--text); background: rgba(45,127,249,0.12); }
+.lbl { color: var(--dim); }
+.grow { flex: 1; }
+select {
+  font: inherit; background: #232b36; color: var(--text);
+  border: 1px solid var(--edge); border-radius: var(--r); padding: 6px 8px; max-width: 200px;
+}
+/* 分段控件：几个按钮拼成一条，视觉上是「选一个」而不是「点四下」 */
+.seg { display: inline-flex; }
+.seg button {
+  border: 1px solid var(--edge); border-radius: 0; margin-left: -1px;
+  background: #232b36; padding: 5px 11px;
+}
+.seg button:first-child { border-radius: var(--r) 0 0 var(--r); margin-left: 0; }
+.seg button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; z-index: 1; }
+
+/* ---- 顶部：工具条 / 状态 / 地图条 / 设置抽屉 ------------------------------ */
 /* 安全区：Android 边到边显示时，内容会被状态栏/挖孔/手势条压住。
    桌面端 env() 全为 0，不受影响。 */
 header {
-  background: #1b212b;
-  padding: calc(10px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right))
-            10px calc(12px + env(safe-area-inset-left));
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: calc(9px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right))
+           9px calc(12px + env(safe-area-inset-left));
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 0 0 auto;
 }
-#status { font-size: 15px; margin-bottom: 8px; min-height: 20px; }
-#status.ok { color: #7ee787; }
-#status.warn { color: #e3b341; }
-#controls { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 13px; }
-#controls button {
-  background: #2d7ff9; color: #fff; border: 0; border-radius: 6px;
-  padding: 6px 16px; font-size: 14px; cursor: pointer;
+#toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#btn-settings b { color: var(--dim); font-weight: 400; }
+#btn-settings[aria-expanded="true"] b { display: inline-block; transform: rotate(180deg); }
+/* 状态是点完按钮唯一要读的一行：给它一盏灯，好坏一眼看出 */
+#status { font-size: 14px; line-height: 1.45; display: flex; gap: 8px; align-items: baseline; }
+#status::before {
+  content: ""; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--dim); transform: translateY(-1px);
 }
-#controls button:disabled { background: #45505f; }
-#controls label { display: flex; gap: 4px; align-items: center; }
-#rng-alpha { width: 90px; }
-#pinbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 13px; }
-#sel-map {
-  background: #232b36; color: #dde3ea; border: 1px solid #3a4553;
-  border-radius: 6px; padding: 5px 8px; font-size: 13px; max-width: 190px;
+#status.ok { color: var(--ok); }
+#status.ok::before { background: var(--ok); }
+#status.warn { color: var(--warn); }
+#status.warn::before { background: var(--warn); }
+#hint { font-size: 12px; color: var(--dim); }
+#hint:empty { display: none; }
+#pinbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#pinstate { color: var(--warn); font-size: 12px; }
+#pinstate:empty { display: none; }
+#settings {
+  display: flex; flex-direction: column; gap: 10px;
+  border-top: 1px solid var(--line); padding-top: 10px;
+  max-height: 34vh; overflow: auto;
 }
-#floorbar { display: flex; gap: 4px; align-items: center; color: #8b96a3; }
-#pinbar button.floor {
-  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
-  border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
-}
-#pinbar button.floor.on { background: #2d7ff9; color: #fff; border-color: #2d7ff9; }
-#pinstate { color: #e3b341; font-size: 12px; }
-#hotkeybar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-             margin-top: 8px; font-size: 13px; color: #8b96a3; }
-/* display 会盖掉 hidden 属性自带的 display:none（UA 样式优先级更低），
-   不补这条的话热键栏在 Android 上照样显示出来 */
-#hotkeybar[hidden] { display: none; }
-#hotkeybar button {
-  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
-  border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer;
-}
-#hotkeybar button b { color: #dde3ea; font: 12px ui-monospace, Menlo, monospace; }
-#hotkeybar button.capturing { border-color: #2d7ff9; color: #2d7ff9; }
-#hint { margin-top: 6px; font-size: 12px; color: #6f7b88; }
+.srow { display: flex; gap: 10px; align-items: center; }
+.srow > label { color: var(--muted); min-width: 7em; }
+.srow input[type="range"] { flex: 1; max-width: 240px; accent-color: var(--accent); }
+#alpha-val, #idle-val { min-width: 40px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#perf { font-size: 12px; color: var(--dim); line-height: 1.7; }
+#perf b { color: var(--muted); font-weight: 600; }
+#hotkeybar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+#hotkeybar button { border: 1px solid var(--edge); background: #232b36; padding: 4px 10px; }
+#hotkeybar button b { color: var(--text); font: 12px ui-monospace, Menlo, monospace; }
+#hotkeybar button.capturing { border-color: var(--accent); color: var(--accent); }
+
+/* ---- 主区：画框吃满剩余高度 ---------------------------------------------- */
+/* overflow:auto 而不是 hidden：设置抽屉展开时头部会变高，矮屏（手机横屏、
+   小窗口）下画框缩到 min-height 后仍装不下候选行与页脚——那时宁可让它滚，
+   也不能直接把内容裁掉。画布自己 touch-action:none，手势不会漏给这层滚动。 */
 main {
-  flex: 1;
-  overflow: auto;
+  flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px calc(10px + env(safe-area-inset-right))
            calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
 }
-#viewbar { display: flex; gap: 8px; align-items: center; padding: 0 4px 6px; font-size: 12px; color: #6f7b88; }
-#viewbar button {
-  background: #232b36; color: #9aa6b2; border: 1px solid #3a4553;
-  border-radius: 6px; padding: 3px 10px; font-size: 13px; cursor: pointer;
-}
-#viewbar button:active { border-color: #2d7ff9; color: #2d7ff9; }
-#zoom-val { min-width: 44px; text-align: center; color: #9aa6b2; font-variant-numeric: tabular-nums; }
-/* pan-y：纵向滚动交给系统；横向拖动与双指捏合由 JS 处理（见 main.js 画布缩放） */
 /* 固定画框：不随内容变高、不带动页面滚动；缩放平移都在框内完成。
-   touch-action: none —— 框内的手势全部交给 JS（捏合缩放 + 单指平移），
+   高度由 flex 给满，长图不再把页面撑长。 */
+#stage { position: relative; flex: 1 1 auto; min-height: 140px; }
+/* touch-action: none —— 框内的手势全部交给 JS（捏合缩放 + 单指平移），
    不让浏览器把它当成页面滚动。 */
 #view {
-  width: 100%; height: 52vh; background: #0c0f14; border-radius: 8px;
-  display: block; touch-action: none; cursor: grab;
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  background: var(--sunk); border-radius: 8px; display: block;
+  touch-action: none; cursor: grab;
 }
 #view:active { cursor: grabbing; }
-#candidates { list-style: none; padding: 8px 4px; font-size: 13px; color: #9aa6b2; }
-#candidates li.best { color: #7ee787; }
-#geom { padding: 0 4px 10px; font: 11px ui-monospace, Menlo, monospace; color: #6e7681; word-break: break-all; }
-#alpha-val, #idle-val { min-width: 34px; color: #8b96a3; font-variant-numeric: tabular-nums; }
-#perf { padding: 0 4px 10px; font-size: 12px; color: #6f7b88; }
-#perf b { color: #9aa6b2; font-weight: 600; }
-#about { padding: 4px 4px 16px; font-size: 12px; color: #6f7b88; line-height: 1.6; }
-#about summary { cursor: pointer; color: #55606c; }
-#about summary::marker { color: #45505f; }
+/* 缩放条浮在画框右上角：常用但不值一整行 */
+#viewbar {
+  position: absolute; top: 8px; right: 8px;
+  display: flex; gap: 4px; align-items: center;
+  background: rgba(12,15,20,0.72); border: 1px solid var(--line);
+  border-radius: 999px; padding: 3px 5px; backdrop-filter: blur(4px);
+}
+#viewbar button { padding: 2px 9px; background: transparent; color: var(--muted); }
+#viewbar button:hover { color: var(--text); }
+#zoom-val { min-width: 42px; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+#zoom-hint {
+  position: absolute; left: 10px; bottom: 8px;
+  font-size: 11px; color: #4b5663; pointer-events: none;
+}
+#candidates {
+  list-style: none; padding: 0; flex: 0 0 auto;
+  display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
+}
+#candidates li {
+  background: var(--panel); border: 1px solid transparent;
+  border-radius: var(--r); padding: 3px 9px; font-variant-numeric: tabular-nums;
+}
+#candidates li.best { color: var(--ok); border-color: rgba(126,231,135,0.3); }
+#footer { flex: 0 0 auto; font-size: 12px; color: var(--dim); }
+#footer summary { cursor: pointer; color: #55606c; padding: 3px 0; }
+#footer summary::marker { color: var(--edge); }
+#geom { padding: 4px 0 8px; font: 11px ui-monospace, Menlo, monospace; color: #6e7681; word-break: break-all; }
+#about { line-height: 1.6; }
 #about p, #about ul { margin: 6px 0; }
 #about ul { padding-left: 18px; }
-#about b { color: #9aa6b2; font-weight: 600; }
+#about b { color: var(--muted); font-weight: 600; }
 #about .notice { color: #8b7a4a; }
-#ver { font: 11px ui-monospace, Menlo, monospace; color: #6f7b88; }
+#ver { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); }
+
+/* 窄屏（手机竖屏）：省掉说明性文字，把宽度让给按钮本身 */
+@media (max-width: 560px) {
+  #zoom-hint { display: none; }
+  .grow { flex-basis: 100%; }
+  #pinbar .lbl { display: none; }
+  select { max-width: 150px; }
+  .srow > label { min-width: 6em; }
+}

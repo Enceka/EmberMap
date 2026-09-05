@@ -258,8 +258,22 @@ function initZoomUi() {
     else zoomAt(cx, cy, 2.5 / zoom);
   });
 
-  // 画框尺寸随窗口变（旋转/改窗口），重新适应
-  window.addEventListener("resize", () => { if (zoom <= 1.01) resetView(); else { clampPan(); blit(); } });
+  // 画框尺寸变了就重新适应。除了窗口缩放/旋转，展开收起「设置」抽屉也会改画框高度，
+  // 那种变化不发 resize 事件，所以以 ResizeObserver 为准。
+  const refit = () => { if (zoom <= 1.01) resetView(); else { clampPan(); blit(); } };
+  window.addEventListener("resize", refit);
+  if (window.ResizeObserver) new ResizeObserver(refit).observe(canvas);
+}
+
+/// 设置抽屉：不透明度、监测间隔、全局热键都是装一次就不再碰的，收起来给画布腾地方
+function initSettingsUi() {
+  const btn = $("btn-settings");
+  const box = $("settings");
+  btn.addEventListener("click", () => {
+    const open = box.hidden;
+    box.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -617,9 +631,10 @@ function renderHotkeys() {
     b.querySelector("b").textContent = hkLabel(hotkeys?.[b.dataset.key]);
     b.classList.toggle("capturing", capturing_hk === b.dataset.key);
   }
+  // 只在真的等按键时占那一行；平时的说明写在设置抽屉里（改键的人才看得到）
   $("hint").textContent = capturing_hk
     ? "请按下新的组合键（需含 ⇧⌃⌥⌘ 之一；Esc 取消）"
-    : "全局热键在游戏里也生效；点上面的按钮即可改键";
+    : "";
 }
 
 async function commitHotkeys(next) {
@@ -958,6 +973,7 @@ listen("hotkey", async (ev) => {
   await initPinUi();
   initIdleUi();
   initZoomUi();
+  initSettingsUi();
   if (caps.hotkeys) await initHotkeyUi();
   else $("hint").textContent = "悬浮窗需「显示在其他应用上层」权限，勾选时会跳转授权";
 

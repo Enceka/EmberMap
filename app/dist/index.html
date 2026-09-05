@@ -9,33 +9,36 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- 版面分三层，越往下越不常用：
+       ① 工具条＋状态 —— 每次都要看/要点的；
+       ② 地图条 —— 认错了或想翻别层时才动；
+       ③ 设置抽屉 —— 装一次就不再碰的（不透明度、监测间隔、热键），默认收起。
+       画布吃掉剩下的全部高度：它才是这个应用的正事。 -->
   <header>
-    <div id="status">就绪——打开游戏内地图后点「抓屏匹配」</div>
-    <div id="controls">
-      <button id="btn-capture">抓屏匹配</button>
-      <button id="btn-reset" title="清除已锁定的变体，下次全库重扫">重新识别</button>
-      <button id="btn-grant" hidden>授权投屏</button>
-      <label><input type="checkbox" id="chk-watch" checked /> 自动监测</label>
+    <div id="toolbar">
+      <button id="btn-capture" class="primary">抓屏匹配</button>
+      <button id="btn-grant" class="primary" hidden>授权投屏</button>
+      <button id="btn-reset" class="ghost" title="清除已锁定的变体，下次全库重扫">重新识别</button>
+      <span class="grow"></span>
+      <label class="chip"><input type="checkbox" id="chk-watch" checked />自动监测</label>
       <!-- 默认不勾：叠加层会盖在游戏画面上，该不该出现由用户决定 -->
-      <label><input type="checkbox" id="chk-overlay" /> 叠加层</label>
+      <label class="chip"><input type="checkbox" id="chk-overlay" />叠加层</label>
       <!-- Android 专用：控制悬浮窗开不开由用户定，不再授权投屏后强制弹出 -->
-      <label id="lbl-control" hidden><input type="checkbox" id="chk-control" /> 控制悬浮窗</label>
-      <label><input type="checkbox" id="chk-top" /> 窗口置顶</label>
-      <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
-      <label>叠加层不透明度
-        <input type="range" id="rng-alpha" min="10" max="100" value="45" />
-        <span id="alpha-val">45%</span>
-      </label>
-      <label title="两轮识别之间歇多久。识别本身的耗时不受它影响">监测间隔
-        <input type="range" id="rng-idle" min="0" max="5000" step="100" value="800" />
-        <span id="idle-val">0.8s</span>
-      </label>
+      <label class="chip" id="lbl-control" hidden><input type="checkbox" id="chk-control" />控制悬浮窗</label>
+      <label class="chip"><input type="checkbox" id="chk-top" />窗口置顶</label>
+      <button id="btn-settings" class="ghost" aria-expanded="false"
+              title="叠加层不透明度、监测间隔、全局热键">设置 <b>▾</b></button>
     </div>
+    <div id="status">就绪——打开游戏内地图后点「抓屏匹配」</div>
+    <!-- 临时提示（改热键、权限说明…）：空的时候不占位，见 #hint:empty -->
+    <div id="hint"></div>
     <!-- 手动锁定：认对了就钉住，之后只跟这张图比，主界面等画面不会再被误判 -->
     <div id="pinbar">
-      <button id="btn-pin" disabled>锁定当前</button>
+      <span class="lbl">地图</span>
       <select id="sel-map" title="锁定地图变体：钉住后只跟它比对"></select>
-      <span id="floorbar">看整层
+      <button id="btn-pin" class="ghost" disabled>锁定当前</button>
+      <span class="lbl">看整层</span>
+      <span id="floorbar" class="seg">
         <button class="floor on" data-floor="">跟随游戏</button>
         <button class="floor" data-floor="b1">地下室</button>
         <button class="floor" data-floor="1f">一楼</button>
@@ -43,46 +46,67 @@
       </span>
       <span id="pinstate"></span>
     </div>
-    <!-- 全局热键（仅桌面）：点按钮后直接按组合即可改键 -->
-    <div id="hotkeybar" hidden>全局热键
-      <button class="hk" data-key="capture_now">抓屏匹配 <b>…</b></button>
-      <button class="hk" data-key="toggle_overlay">开关叠加层 <b>…</b></button>
-      <button class="hk" data-key="reset_lock">重新识别 <b>…</b></button>
-      <button id="hk-reset" title="恢复 ⇧⌥C / ⇧⌥M / ⇧⌥R">恢复默认</button>
-    </div>
-    <div id="hint"></div>
+    <section id="settings" hidden>
+      <div class="srow">
+        <!-- 用「不透明度」而非「透明度」：数值大 = 越实，与滑块方向一致，不会读反 -->
+        <label for="rng-alpha">叠加层不透明度</label>
+        <input type="range" id="rng-alpha" min="10" max="100" value="45" />
+        <span id="alpha-val">45%</span>
+      </div>
+      <div class="srow">
+        <label for="rng-idle" title="两轮识别之间歇多久。识别本身的耗时不受它影响">监测间隔</label>
+        <input type="range" id="rng-idle" min="0" max="5000" step="100" value="800" />
+        <span id="idle-val">0.8s</span>
+      </div>
+      <!-- 监测节奏的实测代价：拿真实耗时算，不写死一句「可能影响性能」 -->
+      <div id="perf"></div>
+      <!-- 全局热键（仅桌面）：点按钮后直接按组合即可改键 -->
+      <div id="hotkeybar" hidden><span class="lbl">全局热键</span>
+        <button class="hk" data-key="capture_now">抓屏匹配 <b>…</b></button>
+        <button class="hk" data-key="toggle_overlay">开关叠加层 <b>…</b></button>
+        <button class="hk" data-key="reset_lock">重新识别 <b>…</b></button>
+        <button id="hk-reset" title="恢复 ⇧⌥C / ⇧⌥M / ⇧⌥R">恢复默认</button>
+        <span class="lbl">在游戏里也生效，点按钮即可改键</span>
+      </div>
+    </section>
   </header>
   <main>
-    <!-- 画布缩放：识别预览与「看整层」共用，倍率记到 localStorage -->
-    <div id="viewbar">
-      <button id="zoom-out" title="缩小">−</button>
-      <span id="zoom-val">100%</span>
-      <button id="zoom-in" title="放大">＋</button>
-      <button id="zoom-fit" title="恢复适应宽度">适应</button>
-      <span id="zoom-hint">滚轮/双指捏合缩放，拖动平移，双击放大/还原</span>
+    <!-- 画框占满剩余高度；缩放条浮在它右上角，不再单占一行 -->
+    <div id="stage">
+      <canvas id="view"></canvas>
+      <div id="viewbar">
+        <button id="zoom-out" title="缩小">−</button>
+        <span id="zoom-val">100%</span>
+        <button id="zoom-in" title="放大">＋</button>
+        <button id="zoom-fit" title="恢复适应宽度（双击画面同效）">适应</button>
+      </div>
+      <div id="zoom-hint">滚轮／双指捏合缩放 · 拖动平移 · 双击还原</div>
     </div>
-    <canvas id="view"></canvas>
     <ul id="candidates"></ul>
-    <!-- 叠加层几何：真机排障时用户拍一张就能对账，省一次「装包→复现」往返 -->
-    <div id="geom"></div>
-    <!-- 监测节奏的实测代价：拿真实耗时算，不写死一句「可能影响性能」 -->
-    <div id="perf"></div>
-    <!-- 关于：版本号、作者与素材来源。默认折叠，不占正事的地方，
-         但素材的版权声明必须随应用一起给到用户，不能只写在仓库 README 里。 -->
-    <details id="about">
-      <summary><span id="ver">EmberMap</span> · 作者 Enceka · 关于与素材来源</summary>
-      <p>第五人格「加页手记」地图识别辅助（噩梦难度）。本工具只读取屏幕画面，
-         不读游戏内存、不注入、不模拟操作。</p>
-      <p>代码作者 <b>Enceka</b>，采用 GPL-3.0-or-later 授权。</p>
-      <p>地图素材来自玩家社区，在此致谢：</p>
-      <ul>
-        <li>手绘示意图：<b>@一个嗑cp的号</b> 绘制；图中致谢小红薯 @撒娇怪（云吃吃版）提供局内小地图</li>
-        <li>游戏内实拍拼图：<b>@王清心TsingXsign</b></li>
-        <li>《第五人格》为网易游戏作品，地图设计版权归网易所有</li>
-      </ul>
-      <p class="notice">上述素材及由其生成的数据包不在本项目的代码授权范围内，
-         <b>版权归各自作者所有，本项目仅作学习交流之用</b>。</p>
-    </details>
+    <div id="footer">
+      <!-- 叠加层几何：真机排障时用户拍一张就能对账，省一次「装包→复现」往返。
+           默认收起——它是排障用的，不该和正事抢版面。 -->
+      <details id="diag">
+        <summary>诊断信息</summary>
+        <div id="geom"></div>
+      </details>
+      <!-- 关于：版本号、作者与素材来源。默认折叠，不占正事的地方，
+           但素材的版权声明必须随应用一起给到用户，不能只写在仓库 README 里。 -->
+      <details id="about">
+        <summary><span id="ver">EmberMap</span> · 作者 Enceka · 关于与素材来源</summary>
+        <p>第五人格「加页手记」地图识别辅助（噩梦难度）。本工具只读取屏幕画面，
+           不读游戏内存、不注入、不模拟操作。</p>
+        <p>代码作者 <b>Enceka</b>，采用 GPL-3.0-or-later 授权。</p>
+        <p>地图素材来自玩家社区，在此致谢：</p>
+        <ul>
+          <li>手绘示意图：<b>@一个嗑cp的号</b> 绘制；图中致谢小红薯 @撒娇怪（云吃吃版）提供局内小地图</li>
+          <li>游戏内实拍拼图：<b>@王清心TsingXsign</b></li>
+          <li>《第五人格》为网易游戏作品，地图设计版权归网易所有</li>
+        </ul>
+        <p class="notice">上述素材及由其生成的数据包不在本项目的代码授权范围内，
+           <b>版权归各自作者所有，本项目仅作学习交流之用</b>。</p>
+      </details>
+    </div>
   </main>
   <script src="main.js"></script>
 </body>
