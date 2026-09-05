@@ -15,6 +15,12 @@
        ③ 设置抽屉 —— 装一次就不再碰的（不透明度、监测间隔、热键），默认收起。
        画布吃掉剩下的全部高度：它才是这个应用的正事。 -->
   <header>
+    <!-- 应用名与免责小字：版权声明必须随应用一起给到用户，折在「关于」里
+         等于没说，所以放一行常驻小字，不抢版面也不用点开才看得见 -->
+    <div id="brand">
+      <b id="ver">EmberMap</b>
+      <span id="notice">仅供学习交流使用<span class="wide">，素材版权归各自作者所有</span></span>
+    </div>
     <div id="toolbar">
       <button id="btn-capture" class="primary">抓屏匹配</button>
       <button id="btn-grant" class="primary" hidden>授权投屏</button>
@@ -93,7 +99,7 @@
       <!-- 关于：版本号、作者与素材来源。默认折叠，不占正事的地方，
            但素材的版权声明必须随应用一起给到用户，不能只写在仓库 README 里。 -->
       <details id="about">
-        <summary><span id="ver">EmberMap</span> · 作者 Enceka · 关于与素材来源</summary>
+        <summary>作者 Enceka · 关于与素材来源</summary>
         <p>第五人格「加页手记」地图识别辅助（噩梦难度）。本工具只读取屏幕画面，
            不读游戏内存、不注入、不模拟操作。</p>
         <p>代码作者 <b>Enceka</b>，采用 GPL-3.0-or-later 授权。</p>

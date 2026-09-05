@@ -79,6 +79,13 @@ header {
   display: flex; flex-direction: column; gap: 8px;
   flex: 0 0 auto;
 }
+/* 品牌行：应用名 + 免责小字，一行到底，安静地待在最上面 */
+#brand {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; font-size: 11px; line-height: 1.4;
+}
+#ver { font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+#notice { color: #5d6874; text-align: right; }
 #toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 #btn-settings b { color: var(--dim); font-weight: 400; }
 #btn-settings[aria-expanded="true"] b { display: inline-block; transform: rotate(180deg); }
@@ -166,11 +173,11 @@ main {
 #about ul { padding-left: 18px; }
 #about b { color: var(--muted); font-weight: 600; }
 #about .notice { color: #8b7a4a; }
-#ver { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); }
 
 /* 窄屏（手机竖屏）：省掉说明性文字，把宽度让给按钮本身 */
 @media (max-width: 560px) {
   #zoom-hint { display: none; }
+  #notice .wide { display: none; }
   .grow { flex-basis: 100%; }
   #pinbar .lbl { display: none; }
   select { max-width: 150px; }
